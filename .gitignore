@@ -1,0 +1,55 @@
+# Build results
+# [Oo]bj/ 忽略 obj 文件夹，这是 .NET 项目编译时生成的主要输出目录
+# [Dd]ebug/ - 忽略 Debug 文件夹（不区分大小写），包含调试模式下编译生成的文件
+# [Rr]elease/ - 忽略 Release 文件夹，包含发布模式下编译生成的文件
+# [Bb]in/ - 忽略 bin 文件夹，.NET 编译输出（FileCopy.exe 等）以及 Go 交叉编译出的 server/bin/filecopy-server
+# [Pp]ublish/ - 忽略 dotnet publish 的发布输出目录
+[Dd]ebug/
+[Rr]elease/
+[Oo]bj/
+[Bb]in/
+[Pp]ublish/
+
+
+# Visual Studio
+# .vs/ - Visual Studio 的用户特定设置文件夹，包含个人偏好设置、断点信息等
+# *.user / *.suo - 项目和解决方案的个人用户设置
+.vs/
+*.user
+*.suo
+
+
+# 其他编辑器
+# .vscode/ - VS Code 的个人工作区设置
+# .idea/ - JetBrains（Rider / GoLand）的项目设置
+.vscode/
+.idea/
+
+
+# Go 服务端
+# server/config.json - 真实的服务端配置，包含访问 Token，不能提交（示例见 config.example.json）
+# server/data/ - 服务端存放用户文件的数据目录
+# *.exe - go run / go build 在 Windows 上生成的可执行文件
+# *.out - go test -coverprofile 生成的覆盖率文件
+server/config.json
+server/data/
+*.exe
+*.out
+
+
+# 本地测试
+# _test/ - 本地联调用的测试服务器配置、数据和同步文件夹
+_test/
+
+
+# 客户端运行时产生的文件
+# *.fcpart - 下载中断时残留的临时文件
+*.fcpart
+
+
+# 操作系统生成的文件
+# Thumbs.db / Desktop.ini - Windows 资源管理器生成的缩略图缓存和文件夹设置
+# .DS_Store - macOS Finder 生成的文件夹属性文件
+Thumbs.db
+[Dd]esktop.ini
+.DS_Store

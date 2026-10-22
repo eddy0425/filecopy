@@ -1,0 +1,40 @@
+<Window x:Class="FileCopy.Client.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="FileCopy 设置" Width="560" SizeToContent="Height" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False" FontSize="13">
+    <Grid Margin="16">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Text="服务器地址" VerticalAlignment="Center" Margin="0,5,10,5" />
+        <TextBox x:Name="ServerUrlBox" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,5" Padding="3"
+                 ToolTip="例如 https://files.example.com 或 http://1.2.3.4:8080" />
+
+        <TextBlock Grid.Row="1" Text="Token" VerticalAlignment="Center" Margin="0,5,10,5" />
+        <PasswordBox x:Name="TokenBox" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,5" Padding="3" />
+
+        <TextBlock Grid.Row="2" Text="本地保留文件夹" VerticalAlignment="Center" Margin="0,5,10,5" />
+        <TextBox x:Name="LocalFolderBox" Grid.Row="2" Grid.Column="1" Margin="0,5" Padding="3"
+                 ToolTip="“保留在本机”的文件存放在这里" />
+        <Button Grid.Row="2" Grid.Column="2" Content="浏览..." Margin="6,5,0,5" Padding="10,2" Click="Browse_Click" />
+
+        <CheckBox x:Name="AutoConnectBox" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,8,0,0"
+                  Content="开机运行时自动连接并最小化到托盘" />
+
+        <StackPanel Grid.Row="4" Grid.ColumnSpan="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Content="保存并连接" Width="100" Padding="0,4" IsDefault="True" Click="Ok_Click" />
+            <Button Content="取消" Width="80" Margin="8,0,0,0" IsCancel="True" />
+        </StackPanel>
+    </Grid>
+</Window>

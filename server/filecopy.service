@@ -1,0 +1,18 @@
+# /etc/systemd/system/filecopy.service
+# Install:
+#   sudo useradd -r -s /usr/sbin/nologin filecopy
+#   sudo mkdir -p /opt/filecopy && sudo cp filecopy-server config.json /opt/filecopy/
+#   sudo chown -R filecopy: /opt/filecopy
+#   sudo systemctl daemon-reload && sudo systemctl enable --now filecopy
+[Unit]
+Description=FileCopy server
+After=network-online.target
+
+[Service]
+User=filecopy
+WorkingDirectory=/opt/filecopy
+ExecStart=/opt/filecopy/filecopy-server -config /opt/filecopy/config.json
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,7 @@
+{
+  "listen": ":8080",
+  "dataDir": "./data",
+  "token": "CHANGE-ME-to-a-long-random-string",
+  "tlsCert": "",
+  "tlsKey": ""
+}
