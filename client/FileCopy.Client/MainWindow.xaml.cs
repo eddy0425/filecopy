@@ -5,6 +5,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using FileCopy.Client.Backup;
 using FileCopy.Client.Local;
 using FileCopy.Client.Transfers;
 using Microsoft.Win32;
@@ -14,13 +15,14 @@ namespace FileCopy.Client;
 public partial class MainWindow : Window
 {
     private const int MaxLogLines = 500;
-    private static readonly string LogFile = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FileCopy", "log.txt");
+    private static readonly string LogFile = Path.Combine(Settings.DataDir, "log.txt");
 
     private readonly Settings _settings = Settings.Load();
     private readonly TransferQueue _transfers = new();
     private readonly ObservableCollection<FileItem> _items = [];
+    private readonly CancellationTokenSource _exit = new();
     private SyncService? _sync;
+    private Task? _backup; // archive creation in progress, so Shutdown can wait for 7-Zip to be killed
     private string _folder = ""; // current server folder ("" = root)
     private int _reloadQueued;
 
@@ -50,7 +52,15 @@ public partial class MainWindow : Window
         Hide();
     }
 
+    /// <summary>App exit: stops transfers and any running backup (7-Zip is killed so no orphan keeps writing).</summary>
     public void Shutdown()
+    {
+        _exit.Cancel();
+        try { _backup?.Wait(TimeSpan.FromSeconds(5)); } catch (Exception) { } // the backup task faults with the cancellation
+        Disconnect();
+    }
+
+    private void Disconnect()
     {
         _sync?.Dispose();
         _sync = null;
@@ -115,7 +125,7 @@ public partial class MainWindow : Window
         var dlg = new SettingsWindow(_settings) { Owner = IsVisible ? this : null };
         if (dlg.ShowDialog() == true)
         {
-            Shutdown();
+            Disconnect();
             _folder = "";
             UpdateBreadcrumb();
             _ = ConnectAsync();
@@ -419,4 +429,61 @@ public partial class MainWindow : Window
     private void OpenLocal_Click(object sender, RoutedEventArgs e) => OpenSyncFolder();
 
     private void Settings_Click(object sender, RoutedEventArgs e) => OpenSettings();
+
+    private async void Backup_Click(object sender, RoutedEventArgs e)
+    {
+        var id = _settings.EquipmentId;
+        if (string.IsNullOrEmpty(id))
+        {
+            MessageBox.Show(this, "请先在设置中填写设备 ID。", "FileCopy");
+            OpenSettings();
+            return;
+        }
+
+        var rel = BackupService.RemoteBackupDir + "/" + BackupService.ArchiveName(id);
+        var sync = _sync;
+        if (sync?.IsBusy(rel) == true)
+        {
+            MessageBox.Show(this, "上一份备份仍在传输中，请等传输完成后再备份。", "FileCopy");
+            return;
+        }
+        var target = sync?.LocalPath(rel) ?? Path.Combine(_settings.LocalFolder, rel.Replace('/', '\\'));
+        BackupButton.IsEnabled = false;
+        try
+        {
+            Log("开始备份...");
+            var backup = Task.Run(() => BackupService.CreateArchiveAsync(target, Log, _exit.Token));
+            _backup = backup;
+            var skipped = await backup;
+            _exit.Token.ThrowIfCancellationRequested(); // exiting: don't start an upload or show a dialog
+            Log($"备份已生成: {target} ({TransferItem.FormatBytes(new FileInfo(target).Length)})");
+            sync = _sync; // compressing can take minutes; the connection may have changed meanwhile
+            string result;
+            if (sync == null)
+                result = "未连接服务器，备份仅保存在本机，连接后自动上传";
+            else if (await sync.UploadFileAsync(target, rel))
+                result = $"备份完成，已上传到服务器 {rel}";
+            else
+                result = "备份已保存在本机，但本次上传未完成（可能正在传输或失败），请查看日志和传输列表";
+            _exit.Token.ThrowIfCancellationRequested(); // exiting: the upload was aborted by Disconnect, don't show a dialog
+            Log(result);
+            var warning = skipped.Count > 0 ? $"\n\n有 {skipped.Count} 个文件无法读取（可能被占用），未包含在备份中，详见日志。" : "";
+            MessageBox.Show(this, $"{result}\n\n本机: {target}{warning}", "FileCopy");
+        }
+        catch (OperationCanceledException) when (_exit.IsCancellationRequested)
+        {
+            Log("备份已取消（程序退出）");
+        }
+        catch (Exception ex)
+        {
+            Log("备份失败: " + ex.Message);
+            MessageBox.Show(this, "备份失败: " + ex.Message, "FileCopy");
+        }
+        finally
+        {
+            _backup = null;
+            BackupButton.IsEnabled = true;
+            Reload();
+        }
+    }
 }

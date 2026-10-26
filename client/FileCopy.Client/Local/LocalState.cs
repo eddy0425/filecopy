@@ -31,7 +31,7 @@ public sealed class LocalState
     {
         var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
             serverUrl.TrimEnd('/').ToLowerInvariant() + "|" + Path.GetFullPath(localFolder).TrimEnd('\\').ToLowerInvariant())))[..16];
-        var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FileCopy", $"state-{key}.json");
+        var path = Path.Combine(Settings.DataDir, $"state-{key}.json");
 
         LocalState? state = null;
         try

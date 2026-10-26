@@ -12,6 +12,7 @@
 - **管理**：新建文件夹、重命名、删除（本机副本进回收站）、下载到任意位置
 - **快速传输**：4 MB 分块，每个文件 4 条连接并行，同时传 3 个文件，失败分块自动重试
 - **冲突保护**：两边同时修改同一文件时，服务器把旧版本另存为 `name (conflict 时间).ext`，不会互相覆盖
+- **一键备份**：把 `D:\Config`、`D:\Recipes`、`D:\MechanicalParameters` 压缩成 `backup/<设备 ID>.7z` 并上传，按设备区分
 - 关闭窗口最小化到托盘，可设置开机自动连接
 
 ### 状态图标
@@ -98,6 +99,7 @@ files.example.com {
 
 - Windows 10 / 11
 - [.NET 9 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/9.0)
+- 使用备份功能需要 [7-Zip](https://www.7-zip.org/)（安装到默认位置，或把 `7za.exe` 放到 `FileCopy.exe` 同目录）
 
 ### 编译
 
@@ -113,12 +115,14 @@ dotnet build -c Release
 1. 首次启动会打开设置窗口，填写：
    - **服务器地址**：如 `https://files.example.com` 或 `http://1.2.3.4:8080`
    - **Token**：与服务端 `config.json` 中一致
-   - **本地保留文件夹**："保留在本机" 的文件存放在这里
+   - **本地保留文件夹**："保留在本机" 的文件存放在这里（默认 `文档\FileCopy\data`；如果 "文档" 已被 OneDrive 接管同步，建议改到 OneDrive 之外的位置，避免两边同步互相干扰）
+   - **设备 ID**：用于区分不同电脑的备份，如 `XZT1-CB`（不用备份可留空）
 2. 双击文件夹进入，双击文件打开（未下载的会先下载）
 3. 右键文件或文件夹：
    - **始终保留在此设备上**：下载并保持同步；对文件夹设置后，服务器上新加进来的文件也会自动下载
    - **释放空间**：删除本机副本，只保留在云端
-4. 已保留的文件每 30 秒自动同步一次，也可点 "刷新" 或按 F5 立即同步
+4. 已保留的文件在打开软件、点 "刷新" / 按 F5、点 "备份" 时同步（不会定时自动扫描）
+5. 点 "备份"：把三个设备文件夹压缩为 `<本地保留文件夹>\backup\<设备 ID>.7z` 并上传到服务器 `backup/`，同名覆盖只保留最新
 
 快捷键：`Enter` 打开，`Backspace` 返回上级，`F2` 重命名，`Delete` 删除，`F5` 刷新。
 
@@ -129,6 +133,9 @@ dotnet build -c Release
 | 设置（Token 用 DPAPI 加密） | `%AppData%\FileCopy\settings.json` |
 | 保留状态 | `%AppData%\FileCopy\state-*.json` |
 | 日志 | `%AppData%\FileCopy\log.txt` |
+| 本地保留文件夹（默认） | `文档\FileCopy\data` |
+| 备份包（默认） | `文档\FileCopy\data\backup\<设备 ID>.7z` |
+| 程序 | `文档\FileCopy\app` |
 
 ## 服务端 API
 

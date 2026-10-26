@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using FileCopy.Client.Api;
+using FileCopy.Client.Backup;
 using FileCopy.Client.Transfers;
 using Microsoft.VisualBasic.FileIO;
 
@@ -16,7 +17,6 @@ public enum FileStatus { CloudOnly, Kept, PendingUpload, PendingDownload, Transf
 public sealed class SyncService : IDisposable
 {
     private const int MaxConcurrentFiles = 3;
-    private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(30);
 
     private readonly ServerApi _api;
     private readonly TransferQueue _transfers;
@@ -25,8 +25,9 @@ public sealed class SyncService : IDisposable
     private readonly SemaphoreSlim _slots = new(MaxConcurrentFiles);
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
     private readonly ConcurrentDictionary<string, byte> _busy = new(StringComparer.OrdinalIgnoreCase);
-    private Timer? _timer;
     private volatile Dictionary<string, RemoteEntry> _remote = new(StringComparer.OrdinalIgnoreCase);
+    private volatile bool _treeLoaded;
+    private Task? _started;
 
     public string Root { get; }
     public LocalState State { get; }
@@ -44,16 +45,31 @@ public sealed class SyncService : IDisposable
         State = LocalState.Load(serverUrl, Root);
     }
 
-    public async Task StartAsync()
+    /// <summary>Connects and does the first refresh. Repeated calls return the same task.</summary>
+    public Task StartAsync() => _started ??= StartCoreAsync();
+
+    private async Task StartCoreAsync()
     {
         await _api.PingAsync(_cts.Token);
-        await RefreshAsync();
-        _timer = new Timer(_ => _ = RefreshAsync(), null, RefreshInterval, RefreshInterval);
+        // No periodic refresh: syncing only happens at startup, on "刷新"/F5, on backup, and after file actions.
+        await RefreshAsync(throwOnTreeError: true);
+        // RefreshAsync is skipped when another refresh already holds the lock; callers of StartAsync
+        // rely on the server tree being loaded, so make sure of it (and throw) here.
+        if (!_treeLoaded) SetRemote(await _api.GetTreeAsync(_cts.Token));
+    }
+
+    private Dictionary<string, RemoteEntry> SetRemote(IEnumerable<RemoteEntry> tree)
+    {
+        var remote = new Dictionary<string, RemoteEntry>(StringComparer.OrdinalIgnoreCase);
+        foreach (var e in tree) remote.TryAdd(e.Path, e); // server may be case-sensitive; first wins
+        _remote = remote;
+        _treeLoaded = true;
+        Changed?.Invoke();
+        return remote;
     }
 
     public void Dispose()
     {
-        _timer?.Dispose();
         _cts.Cancel();
         _api.Dispose();
     }
@@ -69,6 +85,12 @@ public sealed class SyncService : IDisposable
     private static long MtimeMs(DateTime utc) => new DateTimeOffset(utc).ToUnixTimeMilliseconds();
 
     private static bool IsTemp(string path) => path.EndsWith(".fcpart", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>A "*.7z" directly in the backup folder (not in a subfolder).</summary>
+    private static bool IsBackupArchive(string rel) =>
+        rel.StartsWith(BackupService.RemoteBackupDir + "/", StringComparison.OrdinalIgnoreCase)
+        && rel.IndexOf('/', BackupService.RemoteBackupDir.Length + 1) < 0
+        && rel.EndsWith(".7z", StringComparison.OrdinalIgnoreCase);
 
     public bool IsBusy(string rel) => _busy.ContainsKey(rel);
 
@@ -128,17 +150,16 @@ public sealed class SyncService : IDisposable
     // ---------- refresh / reconcile ----------
 
     /// <summary>Fetches the server tree and brings kept items up to date in both directions.</summary>
-    public async Task RefreshAsync()
+    /// <param name="throwOnTreeError">Rethrow (instead of logging) when the server tree cannot be fetched.</param>
+    public async Task RefreshAsync(bool throwOnTreeError = false)
     {
         if (!await _refreshLock.WaitAsync(0)) return;
         var jobs = new List<Task>();
+        var treeFetched = false;
         try
         {
-            var tree = await _api.GetTreeAsync(_cts.Token);
-            var remote = new Dictionary<string, RemoteEntry>(StringComparer.OrdinalIgnoreCase);
-            foreach (var e in tree) remote.TryAdd(e.Path, e); // server may be case-sensitive; first wins
-            _remote = remote;
-            Changed?.Invoke();
+            var remote = SetRemote(await _api.GetTreeAsync(_cts.Token));
+            treeFetched = true;
 
             // 1. Local files.
             var localFiles = Directory.EnumerateFiles(Root, "*", System.IO.SearchOption.AllDirectories)
@@ -172,11 +193,13 @@ public sealed class SyncService : IDisposable
                 if (snap == null)
                 {
                     if (SameAsRemote(fi, r)) State.SetFile(rel, Snapshot(r, fi, pinned: true));
-                    else jobs.Add(UploadAsync(rel, baseMtime: 0)); // server keeps a conflict copy
+                    // Server keeps a conflict copy, except for backup archives, which always replace it.
+                    else jobs.Add(UploadAsync(rel, baseMtime: IsBackupArchive(rel) ? r.Mtime : 0));
                 }
                 else if (LocalChanged(fi, snap))
                 {
-                    jobs.Add(UploadAsync(rel, snap.ServerMtime));
+                    // Backup archives always replace the server copy (no conflict copy), as above.
+                    jobs.Add(UploadAsync(rel, IsBackupArchive(rel) ? r.Mtime : snap.ServerMtime));
                 }
                 else if (r.Mtime != snap.ServerMtime || r.Size != snap.Size)
                 {
@@ -206,7 +229,7 @@ public sealed class SyncService : IDisposable
             State.Save();
         }
         catch (OperationCanceledException) { }
-        catch (Exception ex)
+        catch (Exception ex) when (treeFetched || !throwOnTreeError)
         {
             _log("刷新失败: " + ex.Message);
         }
@@ -301,7 +324,11 @@ public sealed class SyncService : IDisposable
     /// </summary>
     private async Task<RemoteEntry?> UploadFromAsync(string source, string rel, long baseMtime, bool trackAsKept)
     {
-        if (!_busy.TryAdd(rel, 0)) return null;
+        if (!_busy.TryAdd(rel, 0))
+        {
+            _log($"{rel} 正在传输中，本次跳过（稍后刷新会继续同步）");
+            return null;
+        }
         Changed?.Invoke();
         try
         {
@@ -490,7 +517,19 @@ public sealed class SyncService : IDisposable
         await RefreshAsync();
     }
 
-    private async Task UploadExternalAsync(string source, string rel)
+    /// <summary>Uploads one local file to an exact server path, overwriting the server copy. Returns false on failure.</summary>
+    public async Task<bool> UploadFileAsync(string source, string rel)
+    {
+        // Until the first refresh has loaded the server tree, baseMtime would be 0
+        // and the server would keep the previous version as a conflict copy.
+        try { await StartAsync(); }
+        catch (Exception) { return false; } // connection failure is already logged by the caller of StartAsync
+        var ok = await UploadExternalAsync(source, rel);
+        await RefreshAsync();
+        return ok;
+    }
+
+    private async Task<bool> UploadExternalAsync(string source, string rel)
     {
         bool fromMirror = string.Equals(Path.GetFullPath(source), LocalPath(rel), StringComparison.OrdinalIgnoreCase);
         var entry = await UploadFromAsync(source, rel, _remote.GetValueOrDefault(rel)?.Mtime ?? 0, trackAsKept: fromMirror);
@@ -504,6 +543,7 @@ public sealed class SyncService : IDisposable
             State.SetFile(rel, Snapshot(entry, new FileInfo(full), pinned: true));
             State.Save();
         }
+        return entry != null;
     }
 
     /// <summary>Saves a server file or folder to an arbitrary local path without keeping it.</summary>

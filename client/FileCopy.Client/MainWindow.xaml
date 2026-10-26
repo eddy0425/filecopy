@@ -46,6 +46,8 @@
             <Button Content="⬆ 上传文件夹" Style="{StaticResource ToolButton}" Click="UploadFolder_Click" />
             <Button Content="＋ 新建文件夹" Style="{StaticResource ToolButton}" Click="NewFolder_Click" />
             <Button Content="打开本地文件夹" Style="{StaticResource ToolButton}" Click="OpenLocal_Click" />
+            <Button x:Name="BackupButton" Content="🗄 备份" Style="{StaticResource ToolButton}" Click="Backup_Click"
+                    ToolTip="压缩 D:\Config、D:\Recipes、D:\MechanicalParameters 并上传到 backup 文件夹" />
             <Button Content="⚙ 设置" Style="{StaticResource ToolButton}" Click="Settings_Click" />
         </StackPanel>
 

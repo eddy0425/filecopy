@@ -7,14 +7,18 @@ namespace FileCopy.Client;
 
 public sealed class Settings
 {
+    /// <summary>%AppData%\FileCopy: settings.json, state-*.json and log.txt (kept out of Documents, which OneDrive may sync).</summary>
+    public static readonly string DataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FileCopy");
+
     public string ServerUrl { get; set; } = "http://";
-    public string LocalFolder { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "FileCopy");
+    public string LocalFolder { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "FileCopy", "data");
     public bool AutoConnect { get; set; }
+    /// <summary>Identifies this machine; names its backup archive, e.g. XZT1-CB.</summary>
+    public string EquipmentId { get; set; } = "";
     /// <summary>Token encrypted with DPAPI (current user), base64.</summary>
     public string ProtectedToken { get; set; } = "";
 
-    private static readonly string FilePath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FileCopy", "settings.json");
+    private static readonly string FilePath = Path.Combine(DataDir, "settings.json");
 
     public string GetToken()
     {
@@ -36,6 +40,7 @@ public sealed class Settings
 
     public static Settings Load()
     {
+        Directory.CreateDirectory(DataDir); // log.txt is appended here before settings are ever saved
         try
         {
             if (File.Exists(FilePath))

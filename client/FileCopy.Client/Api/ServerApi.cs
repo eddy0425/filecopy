@@ -200,6 +200,15 @@ public sealed class ServerApi : IDisposable
             chunkSize = init.ChunkSize > 0 ? init.ChunkSize : ChunkSize;
         }
 
+        // Chunks are read one at a time, so a file replaced mid-upload would arrive as a mix of
+        // old and new content. Don't send or commit that; the next refresh uploads the new file.
+        void ThrowIfChanged()
+        {
+            var now = new FileInfo(localPath); // fresh instance: FileInfo.Refresh is not safe across parallel chunk workers
+            if (now.Length != size || new DateTimeOffset(now.LastWriteTimeUtc).ToUnixTimeMilliseconds() != mtime)
+                throw new IOException("上传过程中本地文件被修改，已放弃本次上传（下次刷新会重新上传）");
+        }
+
         long done = 0;
         var offsets = new List<long>();
         for (long o = 0; o < size; o += chunkSize) offsets.Add(o);
@@ -214,6 +223,7 @@ public sealed class ServerApi : IDisposable
                     fs.Position = off;
                     await fs.ReadExactlyAsync(buf, token);
                 }
+                ThrowIfChanged(); // fail early instead of after the whole file has been sent
                 for (int attempt = 1; ; attempt++)
                 {
                     try
@@ -231,6 +241,8 @@ public sealed class ServerApi : IDisposable
                 }
                 progress?.Report(Interlocked.Add(ref done, len));
             });
+
+        ThrowIfChanged(); // covers a change after the last chunk was read
 
         using (var cts = WithTimeout(ct))
         using (var resp = await _http.PostAsJsonAsync($"api/upload/{id}/complete", new { baseMtime }, cts.Token))

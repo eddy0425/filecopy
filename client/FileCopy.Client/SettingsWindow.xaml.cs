@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text.RegularExpressions;
 using System.Windows;
 using Microsoft.Win32;
 
@@ -15,6 +16,7 @@ public partial class SettingsWindow : Window
         ServerUrlBox.Text = settings.ServerUrl;
         TokenBox.Password = settings.GetToken();
         LocalFolderBox.Text = settings.LocalFolder;
+        EquipmentIdBox.Text = settings.EquipmentId;
         AutoConnectBox.IsChecked = settings.AutoConnect;
     }
 
@@ -30,6 +32,7 @@ public partial class SettingsWindow : Window
         var url = ServerUrlBox.Text.Trim();
         var token = TokenBox.Password.Trim();
         var folder = LocalFolderBox.Text.Trim();
+        var equipmentId = EquipmentIdBox.Text.Trim();
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || (uri.Scheme != "http" && uri.Scheme != "https"))
         {
             MessageBox.Show(this, "请输入有效的服务器地址，例如 https://files.example.com", "FileCopy");
@@ -45,10 +48,18 @@ public partial class SettingsWindow : Window
             MessageBox.Show(this, "请选择本地保留文件夹（完整路径）。", "FileCopy");
             return;
         }
+        // ".7z" is appended to form the archive name, so a trailing dot is fine, but reserved names stay reserved.
+        if (equipmentId.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0
+            || Regex.IsMatch(equipmentId, @"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$", RegexOptions.IgnoreCase))
+        {
+            MessageBox.Show(this, "设备 ID 不能包含 / \\ : * ? \" < > | 等字符，也不能是 CON、NUL 等系统保留名。", "FileCopy");
+            return;
+        }
 
         _settings.ServerUrl = url;
         _settings.SetToken(token);
         _settings.LocalFolder = folder;
+        _settings.EquipmentId = equipmentId;
         _settings.AutoConnect = AutoConnectBox.IsChecked == true;
         _settings.Save();
         DialogResult = true;
