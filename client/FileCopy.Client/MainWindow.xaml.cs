@@ -17,6 +17,8 @@ public partial class MainWindow : Window
 {
     private const int MaxLogLines = 500;
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(15);
+    // After unlocking, reopening from the tray within this time needs no code (a code is accepted only once).
+    private static readonly TimeSpan UnlockGrace = TimeSpan.FromMinutes(5);
     private static string LogFile => Path.Combine(Settings.DataDir, "log.txt");
     private static readonly object LogLock = new(); // not LogFile: that builds a new string (a new lock) on every call
 
@@ -30,6 +32,9 @@ public partial class MainWindow : Window
     private int _reloadQueued;
     private bool? _online; // heartbeat result for _sync; null while not connected
     private bool _pinging;
+    private bool _hiddenToTray; // closed to the tray (or started there) since the last unlock
+    private DateTime _unlockedAt = DateTime.MinValue;
+    private bool _unlocking;
     private readonly System.Windows.Media.Brush _normalStatusBrush; // StatusText's foreground as set in XAML
 
     public bool StartMinimized { get; }
@@ -43,6 +48,8 @@ public partial class MainWindow : Window
         FilesGrid.ItemsSource = _items;
         TransfersGrid.ItemsSource = _transfers.Items;
         StartMinimized = _settings.AutoConnect && _settings.GetToken().Length > 0;
+        _hiddenToTray = StartMinimized;
+        IsVisibleChanged += (_, _) => { if (IsVisible) _hiddenToTray = false; };
         UpdateBreadcrumb();
         Loaded += (_, _) =>
         {
@@ -60,6 +67,63 @@ public partial class MainWindow : Window
     {
         e.Cancel = true;
         Hide();
+        _hiddenToTray = true;
+    }
+
+    /// <summary>
+    /// When two-step verification is enabled on the server, asks for a code before the window (or the
+    /// local folder) is shown again after being closed to the tray. Returns false if it stays locked.
+    /// </summary>
+    public async Task<bool> UnlockAsync()
+    {
+        if (IsVisible || !_settings.ServerTotpEnabled || !_hiddenToTray || DateTime.UtcNow - _unlockedAt < UnlockGrace) return true;
+        if (_unlocking) return false; // a prompt is already open
+        _unlocking = true;
+        try
+        {
+            var prompt = "请输入二步验证码（验证器 App 中的 6 位数字）：";
+            // E.g. started offline into the tray: the failed connection is not retried on its own.
+            // Connects while the code is being typed: the prompt shows at once, and a slow first sync
+            // has less time to outlast the code than when connecting after it was entered.
+            var connecting = _sync == null && _settings.GetToken().Length > 0 ? ConnectAsync() : Task.CompletedTask;
+            while (true)
+            {
+                var code = InputDialog.Show(null, "FileCopy 已锁定", prompt);
+                if (code == null) return false;
+                await connecting;
+                var sync = _sync;
+                if (sync == null)
+                {
+                    MessageBox.Show("未连接服务器，无法验证。请等待连接恢复后再试。", "FileCopy");
+                    return false;
+                }
+                try
+                {
+                    if (await sync.VerifyTotpAsync(code))
+                    {
+                        _unlockedAt = DateTime.UtcNow;
+                        _hiddenToTray = false;
+                        return true;
+                    }
+                }
+                catch (TotpCodeUsedException ex)
+                {
+                    prompt = ex.Message + "：";
+                    continue;
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("无法验证: " + SyncService.ErrorText(ex), "FileCopy");
+                    return false;
+                }
+                Log("解锁失败: 验证码错误");
+                prompt = "验证码错误，请重新输入：";
+            }
+        }
+        finally
+        {
+            _unlocking = false;
+        }
     }
 
     /// <summary>App exit: stops transfers and any running backup (7-Zip is killed so no orphan keeps writing).</summary>
@@ -111,15 +175,27 @@ public partial class MainWindow : Window
     private async Task ConnectAsync()
     {
         if (_sync != null) return; // already connecting/connected
+        if (string.IsNullOrWhiteSpace(_settings.EquipmentId))
+        {
+            StatusText.Text = "未连接：请先在设置中填写设备 ID";
+            StatusText.Foreground = System.Windows.Media.Brushes.Firebrick;
+            if (IsVisible)
+            {
+                MessageBox.Show(this, "请先在设置中填写设备 ID。", "FileCopy");
+                OpenSettings();
+            }
+            return;
+        }
         StatusText.Text = "正在连接...";
         StatusText.Foreground = _normalStatusBrush;
-        var sync = new SyncService(_settings.ServerUrl, _settings.GetToken(), _settings.LocalFolder, _transfers, Log);
+        var sync = new SyncService(_settings.ServerUrl, _settings.GetToken(), _settings.EquipmentId, _settings.LocalFolder, _transfers, Log);
         sync.Changed += QueueReload;
         _sync = sync;
         try
         {
             await sync.StartAsync();
             if (_sync != sync) return; // replaced by a newer connection meanwhile
+            if (sync.LastPing != null) ApplyPing(sync, sync.LastPing);
             SetOnline(sync, true, null);
             Log("已连接 " + _settings.ServerUrl);
         }
@@ -143,8 +219,10 @@ public partial class MainWindow : Window
         _pinging = true;
         try
         {
-            await sync.PingAsync();
-            if (_sync == sync) SetOnline(sync, true, null);
+            var ping = await sync.PingAsync();
+            if (_sync != sync) return;
+            ApplyPing(sync, ping);
+            SetOnline(sync, true, null);
         }
         catch (Exception ex)
         {
@@ -154,6 +232,26 @@ public partial class MainWindow : Window
         {
             _pinging = false;
         }
+    }
+
+    /// <summary>Takes over server-side settings: whether the window locks, and an EquipmentId renamed in the control panel.</summary>
+    private void ApplyPing(SyncService sync, PingResult ping)
+    {
+        var changed = false;
+        if (_settings.ServerTotpEnabled != ping.Totp)
+        {
+            _settings.ServerTotpEnabled = ping.Totp;
+            changed = true;
+            Log(ping.Totp ? "服务器已启用二步认证：关闭到托盘后再次打开需要验证码" : "服务器已停用二步认证");
+        }
+        if (!string.IsNullOrEmpty(ping.EquipmentId) && ping.EquipmentId != _settings.EquipmentId)
+        {
+            Log($"设备 ID 已由服务器改为 {ping.EquipmentId}（原为 {_settings.EquipmentId}）");
+            _settings.EquipmentId = ping.EquipmentId;
+            sync.SetEquipmentId(ping.EquipmentId);
+            changed = true;
+        }
+        if (changed) _settings.Save();
     }
 
     private void SetOnline(SyncService sync, bool online, Exception? failure)
@@ -220,20 +318,21 @@ public partial class MainWindow : Window
         }
 
         var listing = sync.List(_folder);
-        var rows = new List<(string Rel, bool IsDir, FileStatus Status, bool Pinned, long Size, long Mtime)>();
+        var rows = new List<(string Rel, bool IsDir, FileStatus Status, bool Pinned, long Size, long Mtime, bool ReadOnly)>();
         foreach (var e in listing.Remote)
         {
             var status = e.IsDir
                 ? (sync.State.IsInKeptFolder(e.Path) ? FileStatus.Kept : FileStatus.CloudOnly)
                 : sync.GetFileStatus(e.Path);
-            rows.Add((e.Path, e.IsDir, status, sync.State.IsPinned(e.Path), e.Size, e.Mtime));
+            rows.Add((e.Path, e.IsDir, status, sync.State.IsPinned(e.Path), e.Size, e.Mtime, e.ReadOnly));
         }
-        foreach (var d in listing.LocalOnlyDirs) rows.Add((d, true, FileStatus.LocalOnly, false, 0, 0));
+        foreach (var d in listing.LocalOnlyDirs) rows.Add((d, true, FileStatus.LocalOnly, false, 0, 0, sync.IsReadOnly(d)));
         foreach (var f in listing.LocalOnlyFiles)
         {
             var fi = new FileInfo(sync.LocalPath(f));
             var status = sync.IsBusy(f) ? FileStatus.Transferring : FileStatus.LocalOnly;
-            rows.Add((f, false, status, false, fi.Exists ? fi.Length : 0, fi.Exists ? new DateTimeOffset(fi.LastWriteTimeUtc).ToUnixTimeMilliseconds() : 0));
+            rows.Add((f, false, status, false, fi.Exists ? fi.Length : 0,
+                fi.Exists ? new DateTimeOffset(fi.LastWriteTimeUtc).ToUnixTimeMilliseconds() : 0, sync.IsReadOnly(f)));
         }
         rows.Sort((a, b) => a.IsDir != b.IsDir ? (a.IsDir ? -1 : 1) : StringComparer.CurrentCultureIgnoreCase.Compare(a.Rel, b.Rel));
 
@@ -247,10 +346,15 @@ public partial class MainWindow : Window
             foreach (var r in rows) _items.Add(new FileItem(r.Rel, r.IsDir));
             foreach (var item in _items.Where(i => selected.Contains(i.Rel))) FilesGrid.SelectedItems.Add(item);
         }
-        for (int i = 0; i < rows.Count; i++) _items[i].Update(rows[i].Status, rows[i].Pinned, rows[i].Size, rows[i].Mtime);
+        for (int i = 0; i < rows.Count; i++)
+            _items[i].Update(rows[i].Status, rows[i].Pinned, rows[i].Size, rows[i].Mtime, rows[i].ReadOnly);
 
         EmptyHint.Visibility = _items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         UpButton.IsEnabled = _folder.Length > 0;
+        var readOnly = _folder.Length > 0 && sync.IsReadOnly(_folder);
+        UploadFilesButton.IsEnabled = UploadFolderButton.IsEnabled = NewFolderButton.IsEnabled = !readOnly;
+        ReadOnlyHint.Visibility = readOnly ? Visibility.Visible : Visibility.Collapsed;
+        EmptyHint.Text = readOnly ? "此文件夹为空" : "此文件夹为空 —— 把文件拖到这里即可上传";
         UpdateLocalUsage(sync);
     }
 
@@ -437,7 +541,7 @@ public partial class MainWindow : Window
         var items = Targets(sender);
         if (items.Count == 0) return;
         var what = items.Count == 1 ? $"“{items[0].Name}”" : $"这 {items.Count} 项";
-        var answer = MessageBox.Show(this, $"从服务器上删除{what}？\n\n本机的副本会移到回收站。",
+        var answer = MessageBox.Show(this, $"从服务器上删除{what}？\n\n删除后进入服务器回收站，可在控制面板中还原；本机的副本会移到回收站。",
             "FileCopy", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
         if (answer != MessageBoxResult.OK) return;
         await Run(async s =>
@@ -466,7 +570,8 @@ public partial class MainWindow : Window
 
     private void FilesGrid_DragOver(object sender, DragEventArgs e)
     {
-        e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
+        var readOnly = _folder.Length > 0 && _sync?.IsReadOnly(_folder) == true;
+        e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) && !readOnly ? DragDropEffects.Copy : DragDropEffects.None;
         e.Handled = true;
     }
 

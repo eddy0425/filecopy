@@ -3,10 +3,10 @@ using System.Windows.Controls;
 
 namespace FileCopy.Client;
 
-/// <summary>Minimal single-line text prompt (used for rename / new folder).</summary>
+/// <summary>Minimal single-line text prompt (used for rename / new folder / the unlock code).</summary>
 public static class InputDialog
 {
-    public static string? Show(Window owner, string title, string prompt, string initial = "")
+    public static string? Show(Window? owner, string title, string prompt, string initial = "")
     {
         var box = new TextBox { Text = initial, Margin = new Thickness(0, 6, 0, 12), Padding = new Thickness(3) };
         var ok = new Button { Content = "确定", Width = 80, IsDefault = true };
@@ -27,8 +27,10 @@ public static class InputDialog
             Width = 380,
             SizeToContent = SizeToContent.Height,
             ResizeMode = ResizeMode.NoResize,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            ShowInTaskbar = false,
+            // Without an owner (the main window is hidden in the tray) show it on top, with a taskbar button.
+            WindowStartupLocation = owner != null ? WindowStartupLocation.CenterOwner : WindowStartupLocation.CenterScreen,
+            ShowInTaskbar = owner == null,
+            Topmost = owner == null,
         };
         ok.Click += (_, _) => win.DialogResult = true;
         win.Loaded += (_, _) =>

@@ -70,6 +70,7 @@ internal static class ServerBinary
 public sealed class TestServer : IDisposable
 {
     public const string Token = "test-token-0123456789";
+    public const string EquipmentId = "TEST-PC";
 
     private readonly Process _process;
     private readonly string _dir;
@@ -77,10 +78,16 @@ public sealed class TestServer : IDisposable
     public string Url { get; }
     public string DataDir { get; }
 
-    public TestServer()
+    /// <param name="state">Written as the server's .filecopy/state.json before it starts (read-only folders, TOTP secret, ...).</param>
+    public TestServer(object? state = null)
     {
         _dir = TestEnv.NewDir("server");
         DataDir = System.IO.Path.Combine(_dir, "data");
+        if (state != null)
+        {
+            Directory.CreateDirectory(System.IO.Path.Combine(DataDir, ".filecopy"));
+            File.WriteAllText(System.IO.Path.Combine(DataDir, ".filecopy", "state.json"), JsonSerializer.Serialize(state));
+        }
         int port = FreePort();
         Url = $"http://127.0.0.1:{port}";
         var config = System.IO.Path.Combine(_dir, "config.json");
@@ -172,7 +179,7 @@ public sealed class TestClient : IDisposable
     public TestClient(TestServer server, string? root = null)
     {
         Root = root ?? TestEnv.NewDir("mirror");
-        Sync = new SyncService(server.Url, TestServer.Token, Root, new TransferQueue(), Logs.Enqueue);
+        Sync = new SyncService(server.Url, TestServer.Token, TestServer.EquipmentId, Root, new TransferQueue(), Logs.Enqueue);
     }
 
     public string LogText => string.Join(Environment.NewLine, Logs);

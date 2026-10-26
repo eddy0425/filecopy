@@ -11,7 +11,15 @@ public sealed record RemoteEntry(
     [property: JsonPropertyName("path")] string Path,
     [property: JsonPropertyName("isDir")] bool IsDir,
     [property: JsonPropertyName("size")] long Size,
-    [property: JsonPropertyName("mtime")] long Mtime);
+    [property: JsonPropertyName("mtime")] long Mtime,
+    // In (or is) a folder set read-only in the control panel: clients may only download.
+    [property: JsonPropertyName("readOnly")] bool ReadOnly = false);
+
+/// <param name="Totp">Two-step verification is enabled: the window locks after being closed to the tray.</param>
+/// <param name="EquipmentId">This device's ID as the server knows it; differs from ours after a rename in the control panel.</param>
+public sealed record PingResult(
+    [property: JsonPropertyName("totp")] bool Totp,
+    [property: JsonPropertyName("equipmentId")] string EquipmentId);
 
 /// <summary>
 /// HTTP client for the FileCopy server. Large transfers are split into chunks
@@ -28,9 +36,11 @@ public sealed class ServerApi : IDisposable
     private static readonly TimeSpan StallTimeout = TimeSpan.FromSeconds(30);
 
     private readonly HttpClient _http;
+    private volatile string _equipmentId;
 
-    public ServerApi(string baseUrl, string token)
+    public ServerApi(string baseUrl, string token, string equipmentId)
     {
+        _equipmentId = equipmentId;
         var handler = new SocketsHttpHandler
         {
             MaxConnectionsPerServer = 32,
@@ -38,7 +48,7 @@ public sealed class ServerApi : IDisposable
             ConnectTimeout = TimeSpan.FromSeconds(10),
             AutomaticDecompression = DecompressionMethods.None,
         };
-        _http = new HttpClient(handler)
+        _http = new HttpClient(new EquipmentIdHandler(this, handler))
         {
             BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/"),
             Timeout = System.Threading.Timeout.InfiniteTimeSpan, // per-request timeouts are applied below
@@ -48,10 +58,38 @@ public sealed class ServerApi : IDisposable
 
     public void Dispose() => _http.Dispose();
 
+    /// <summary>Switches to an ID assigned in the control panel; applies to requests started from now on.</summary>
+    public void SetEquipmentId(string equipmentId) => _equipmentId = equipmentId;
+
+    /// <summary>Adds X-Equipment-Id per request, so it can change while transfers are running.</summary>
+    private sealed class EquipmentIdHandler(ServerApi api, HttpMessageHandler inner) : DelegatingHandler(inner)
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            request.Headers.Remove("X-Equipment-Id");
+            request.Headers.Add("X-Equipment-Id", Uri.EscapeDataString(api._equipmentId));
+            return base.SendAsync(request, ct);
+        }
+    }
+
     private static string Q(string path) => Uri.EscapeDataString(path);
 
-    private static bool IsUnauthorized(Exception ex) =>
-        ex is HttpRequestException { StatusCode: HttpStatusCode.Unauthorized };
+    /// <summary>Errors that retrying will not fix: bad token, read-only folder, connections paused by the administrator.</summary>
+    private static bool IsFatal(Exception ex) =>
+        ex is UnauthorizedException or ReadOnlyFolderException or ServerPausedException
+        || ex is HttpRequestException { StatusCode: HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden or HttpStatusCode.ServiceUnavailable };
+
+    /// <summary>EnsureSuccessStatusCode with readable errors for the statuses the server uses on purpose.</summary>
+    private static void EnsureOk(HttpResponseMessage resp)
+    {
+        switch (resp.StatusCode)
+        {
+            case HttpStatusCode.Unauthorized: throw new UnauthorizedException("Token 无效 (401)");
+            case HttpStatusCode.Forbidden: throw new ReadOnlyFolderException();
+            case HttpStatusCode.ServiceUnavailable: throw new ServerPausedException();
+        }
+        resp.EnsureSuccessStatusCode();
+    }
 
     private static CancellationTokenSource WithTimeout(CancellationToken ct, int seconds = 60)
     {
@@ -60,13 +98,28 @@ public sealed class ServerApi : IDisposable
         return cts;
     }
 
-    public async Task PingAsync(CancellationToken ct = default)
+    public async Task<PingResult> PingAsync(CancellationToken ct = default)
     {
         using var cts = WithTimeout(ct, 15);
         using var resp = await _http.GetAsync("api/ping", cts.Token);
-        if (resp.StatusCode == HttpStatusCode.Unauthorized)
-            throw new UnauthorizedException("Token 无效 (401)");
-        resp.EnsureSuccessStatusCode();
+        if (resp.StatusCode == HttpStatusCode.BadRequest)
+            throw new InvalidOperationException("服务器要求填写设备 ID，请在设置中填写");
+        EnsureOk(resp);
+        return await resp.Content.ReadFromJsonAsync<PingResult>(cts.Token)
+               ?? throw new InvalidDataException("bad ping response");
+    }
+
+    /// <summary>Checks a two-step verification code (to unlock the window). False when it is wrong.</summary>
+    public async Task<bool> VerifyTotpAsync(string code, CancellationToken ct = default)
+    {
+        using var cts = WithTimeout(ct, 15);
+        using var resp = await _http.PostAsJsonAsync("api/totp/verify", new { code }, cts.Token);
+        if (resp.StatusCode == HttpStatusCode.Forbidden) return false;
+        if (resp.StatusCode == HttpStatusCode.Conflict) throw new TotpCodeUsedException();
+        if (resp.StatusCode == HttpStatusCode.TooManyRequests)
+            throw new InvalidOperationException("尝试次数过多，请 5 分钟后再试");
+        EnsureOk(resp);
+        return true;
     }
 
     public async Task<List<RemoteEntry>> GetTreeAsync(CancellationToken ct = default)
@@ -80,7 +133,7 @@ public sealed class ServerApi : IDisposable
         using var cts = WithTimeout(ct);
         using var resp = await _http.DeleteAsync($"api/file?path={Q(path)}", cts.Token);
         if (resp.StatusCode != HttpStatusCode.NotFound)
-            resp.EnsureSuccessStatusCode();
+            EnsureOk(resp);
     }
 
     public async Task MoveAsync(string from, string to, CancellationToken ct = default)
@@ -90,14 +143,14 @@ public sealed class ServerApi : IDisposable
         // The server refuses to replace an existing item (e.g. created by another device since the last refresh).
         if (resp.StatusCode == HttpStatusCode.Conflict)
             throw new IOException($"已存在同名项: {Path.GetFileName(to)}");
-        resp.EnsureSuccessStatusCode();
+        EnsureOk(resp);
     }
 
     public async Task MkdirAsync(string path, CancellationToken ct = default)
     {
         using var cts = WithTimeout(ct);
         using var resp = await _http.PostAsJsonAsync("api/mkdir", new { path }, cts.Token);
-        resp.EnsureSuccessStatusCode();
+        EnsureOk(resp);
     }
 
     /// <summary>
@@ -116,6 +169,8 @@ public sealed class ServerApi : IDisposable
                 using var req = new HttpRequestMessage(HttpMethod.Get, $"api/file?path={Q(path)}");
                 req.Headers.Range = new RangeHeaderValue(offset, offset + length - 1);
                 using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+                // Not EnsureOk: reading is never refused for a read-only folder, so a 403 is not that.
+                if (resp.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.ServiceUnavailable) EnsureOk(resp);
                 resp.EnsureSuccessStatusCode();
                 var buf = new byte[length];
                 await using var s = await resp.Content.ReadAsStreamAsync(cts.Token);
@@ -128,7 +183,7 @@ public sealed class ServerApi : IDisposable
                 }
                 return buf;
             }
-            catch (Exception ex) when (attempt < MaxRetries && !ct.IsCancellationRequested && !IsUnauthorized(ex))
+            catch (Exception ex) when (attempt < MaxRetries && !ct.IsCancellationRequested && !IsFatal(ex))
             {
                 onRetry?.Invoke(attempt, ex);
                 await Task.Delay(TimeSpan.FromSeconds(attempt * 2), ct);
@@ -222,7 +277,7 @@ public sealed class ServerApi : IDisposable
         using (var cts = WithTimeout(ct))
         using (var resp = await _http.PostAsJsonAsync("api/upload/init", new { path = remotePath, size, mtime }, cts.Token))
         {
-            resp.EnsureSuccessStatusCode();
+            EnsureOk(resp);
             var init = await resp.Content.ReadFromJsonAsync<InitResponse>(cts.Token)
                        ?? throw new InvalidDataException("bad init response");
             id = init.Id;
@@ -264,7 +319,7 @@ public sealed class ServerApi : IDisposable
                         resp.EnsureSuccessStatusCode();
                         break;
                     }
-                    catch (Exception ex) when (attempt < MaxRetries && !token.IsCancellationRequested && !IsUnauthorized(ex))
+                    catch (Exception ex) when (attempt < MaxRetries && !token.IsCancellationRequested && !IsFatal(ex))
                     {
                         onRetry?.Invoke(attempt, ex);
                         await Task.Delay(TimeSpan.FromSeconds(attempt * 2), token);
@@ -278,7 +333,7 @@ public sealed class ServerApi : IDisposable
         using (var cts = WithTimeout(ct))
         using (var resp = await _http.PostAsJsonAsync($"api/upload/{id}/complete", new { baseMtime }, cts.Token))
         {
-            resp.EnsureSuccessStatusCode();
+            EnsureOk(resp);
             return await resp.Content.ReadFromJsonAsync<RemoteEntry>(cts.Token)
                    ?? throw new InvalidDataException("bad complete response");
         }
@@ -315,3 +370,12 @@ public sealed class ServerApi : IDisposable
 
 /// <summary>The server rejected the token (HTTP 401); retrying will not help.</summary>
 public sealed class UnauthorizedException(string message) : InvalidOperationException(message);
+
+/// <summary>The path is in a folder set read-only in the control panel (HTTP 403).</summary>
+public sealed class ReadOnlyFolderException() : IOException("只读文件夹，不能修改");
+
+/// <summary>The code is valid but was just used (e.g. to log in to the control panel); the next one is needed.</summary>
+public sealed class TotpCodeUsedException() : InvalidOperationException("该验证码刚刚已使用过，请等待验证器显示下一个验证码");
+
+/// <summary>The administrator has paused client connections (HTTP 503).</summary>
+public sealed class ServerPausedException() : InvalidOperationException("服务器已暂停连接");

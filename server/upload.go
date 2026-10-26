@@ -25,6 +25,7 @@ type uploadSession struct {
 	size     int64
 	mtime    int64 // unix ms
 	tmpPath  string
+	client   bool // started through the client API: read-only folders apply
 	file     *os.File
 	mu       sync.Mutex
 	received map[int64]int64 // offset -> length of chunks written
@@ -107,6 +108,10 @@ func (s *Server) handleUploadInit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if isClient(r) && s.state.isReadOnly(rel) {
+		s.denyReadOnly(w)
+		return
+	}
 	idBytes := make([]byte, 16)
 	rand.Read(idBytes)
 	id := hex.EncodeToString(idBytes)
@@ -125,7 +130,7 @@ func (s *Server) handleUploadInit(w http.ResponseWriter, r *http.Request) {
 	}
 	sess := &uploadSession{
 		id: id, rel: rel, size: req.Size, mtime: req.Mtime,
-		tmpPath: tmp, file: f, received: map[int64]int64{}, lastUsed: time.Now(),
+		tmpPath: tmp, client: isClient(r), file: f, received: map[int64]int64{}, lastUsed: time.Now(),
 	}
 	s.uploads.mu.Lock()
 	s.uploads.sessions[id] = sess
@@ -180,6 +185,10 @@ func (s *Server) handleUploadComplete(w http.ResponseWriter, r *http.Request) {
 
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
+	if sess.client && s.state.isReadOnly(sess.rel) { // made read-only while uploading
+		s.denyReadOnly(w)
+		return
+	}
 	if !coversAll(sess.received, sess.size) {
 		http.Error(w, "upload incomplete", http.StatusConflict)
 		return
@@ -190,6 +199,10 @@ func (s *Server) handleUploadComplete(w http.ResponseWriter, r *http.Request) {
 	}
 	sess.file.Close()
 
+	if !notAlias(s.root, sess.rel) { // a long name created since init got this as its 8.3 alias
+		http.Error(w, errBadPath.Error(), http.StatusBadRequest)
+		return
+	}
 	abs := filepath.Join(s.root, filepath.FromSlash(sess.rel))
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		httpFsError(w, err)

@@ -30,7 +30,10 @@ public partial class App : Application
             ContextMenuStrip = new Forms.ContextMenuStrip(),
         };
         _tray.ContextMenuStrip.Items.Add("打开 FileCopy", null, (_, _) => ShowWindow());
-        _tray.ContextMenuStrip.Items.Add("打开同步文件夹", null, (_, _) => _window.OpenSyncFolder());
+        _tray.ContextMenuStrip.Items.Add("打开同步文件夹", null, async (_, _) =>
+        {
+            if (await _window.UnlockAsync()) _window.OpenSyncFolder();
+        });
         _tray.ContextMenuStrip.Items.Add("立即同步", null, (_, _) => _window.SyncNow());
         _tray.ContextMenuStrip.Items.Add("-");
         _tray.ContextMenuStrip.Items.Add("退出", null, (_, _) => ExitApp());
@@ -40,9 +43,11 @@ public partial class App : Application
         else _window.Show();
     }
 
-    private void ShowWindow()
+    // Locked after being closed to the tray when two-step verification is enabled on the server.
+    private async void ShowWindow()
     {
-        _window!.Show();
+        if (!await _window!.UnlockAsync()) return;
+        _window.Show();
         _window.WindowState = WindowState.Normal;
         _window.Activate();
     }

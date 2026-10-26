@@ -18,13 +18,14 @@
 #     filecopy-server      服务端二进制
 #     Dockerfile
 #     docker-compose.yml
-#     config.json          配置（含 Token，首次安装自动生成，升级时保留）
+#     config.json          配置（含 Token 和面板初始密码，首次安装自动生成，升级时保留）
 #     data/                用户文件
 set -euo pipefail
 
 APP_DIR=/root/data/docker_data/filecopy
 PORT="${PORT:-8240}"
 BIND="${BIND:-0.0.0.0}"
+case "$BIND" in localhost|::1|"[::1]") BIND=127.0.0.1 ;; esac # 后面按 127.0.0.1 判断“只监听本机”
 GO_IMAGE="${GO_IMAGE:-golang:1.23-alpine}"
 REPO_TARBALL="${REPO_TARBALL:-https://github.com/eddy0425/filecopy/archive/refs/heads/main.tar.gz}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -97,19 +98,22 @@ if [ -f "$APP_DIR/config.json" ]; then
 else
     if command -v openssl >/dev/null; then
         TOKEN="$(openssl rand -hex 32)"
+        ADMIN_PASSWORD="$(openssl rand -hex 8)"
     else
         TOKEN="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+        ADMIN_PASSWORD="$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
     fi
     # 容器内的路径；对外端口由 docker-compose.yml 映射
     cat > "$APP_DIR/config.json" <<EOF
 {
   "listen": ":8080",
   "dataDir": "/app/data",
-  "token": "$TOKEN"
+  "token": "$TOKEN",
+  "adminPassword": "$ADMIN_PASSWORD"
 }
 EOF
     chmod 600 "$APP_DIR/config.json"
-    info "已生成配置和随机 Token"
+    info "已生成配置、随机 Token 和控制面板密码"
 fi
 
 cat > "$APP_DIR/Dockerfile" <<'EOF'
@@ -121,6 +125,9 @@ EXPOSE 8080
 ENTRYPOINT ["/app/filecopy-server", "-config", "/app/config.json"]
 EOF
 
+# 只监听本机时前面是反向代理，它经 Docker 网桥（172.x）访问容器，需信任其 X-Forwarded-For
+TRUST_PROXY=0; [ "$BIND" = "127.0.0.1" ] && TRUST_PROXY=1
+
 cat > "$APP_DIR/docker-compose.yml" <<EOF
 services:
   filecopy:
@@ -128,6 +135,8 @@ services:
     image: filecopy-server:latest
     container_name: filecopy
     restart: unless-stopped
+    environment:
+      - FILECOPY_TRUST_PROXY=$TRUST_PROXY
     ports:
       - "$BIND:$PORT:8080"
     volumes:
@@ -149,10 +158,12 @@ docker image prune -f --filter label=app=filecopy >/dev/null 2>&1 || true
 
 # ---------- 健康检查 ----------
 TOKEN="$(sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' config.json)"
+ADMIN_PASSWORD="$(sed -n 's/.*"adminPassword"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' config.json)"
 CHECK_HOST="$BIND"; [ "$CHECK_HOST" = "0.0.0.0" ] && CHECK_HOST=127.0.0.1
 OK=0
 for _ in $(seq 1 10); do
-    if curl -fsS -H "Authorization: Bearer $TOKEN" "http://$CHECK_HOST:$PORT/api/ping" >/dev/null 2>&1; then
+    # 不需要认证的面板接口；/api/ping 需要设备 ID，会在面板里多出一台设备
+    if curl -fsS "http://$CHECK_HOST:$PORT/admin/api/session" >/dev/null 2>&1; then
         OK=1; break
     fi
     sleep 1
@@ -166,10 +177,17 @@ echo "  安装目录：$APP_DIR"
 echo "  数据目录：$APP_DIR/data"
 if [ "$BIND" = "127.0.0.1" ]; then
     echo "  本机地址：http://127.0.0.1:$PORT（请配置反向代理提供 HTTPS）"
+    echo "  控制面板：<你的 HTTPS 地址>/admin"
 else
     echo "  服务器地址：http://$PUBLIC_IP:$PORT"
+    echo "  控制面板：http://$PUBLIC_IP:$PORT/admin"
 fi
 echo "  Token：$TOKEN"
+if [ -n "$ADMIN_PASSWORD" ]; then
+    echo "  面板初始密码：$ADMIN_PASSWORD（在面板中修改密码后以面板设置为准）"
+else
+    echo "  面板密码：config.json 中未设置 adminPassword，用 Token 登录（可在面板中修改密码）"
+fi
 echo
 echo "  常用命令（在 $APP_DIR 下）："
 echo "    $COMPOSE logs -f      查看日志"

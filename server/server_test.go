@@ -14,7 +14,10 @@ import (
 	"testing"
 )
 
-const testToken = "test-token-0123456789"
+const (
+	testToken  = "test-token-0123456789"
+	testDevice = "XZT1-DB1"
+)
 
 func newTestServer(t *testing.T) (*Server, *httptest.Server) {
 	t.Helper()
@@ -34,6 +37,7 @@ func do(t *testing.T, ts *httptest.Server, method, url string, body io.Reader, h
 	t.Helper()
 	req, _ := http.NewRequest(method, ts.URL+url, body)
 	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set("X-Equipment-Id", testDevice)
 	for i := 0; i+1 < len(hdr); i += 2 {
 		req.Header.Set(hdr[i], hdr[i+1])
 	}
@@ -215,6 +219,9 @@ func TestMoveDeleteMkdir(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(s.root, "d")); !os.IsNotExist(err) {
 		t.Fatal("d should be gone")
+	}
+	if items := s.trash.list(); len(items) != 1 || items[0].Path != "d" || !items[0].IsDir || items[0].DeletedBy != testDevice {
+		t.Fatalf("trash = %+v", items)
 	}
 	if _, err := os.Stat(filepath.Join(s.root, "e", "f")); err != nil {
 		t.Fatal(err)
