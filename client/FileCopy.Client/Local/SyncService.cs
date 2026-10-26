@@ -25,7 +25,11 @@ public sealed class SyncService : IDisposable
     private readonly SemaphoreSlim _slots = new(MaxConcurrentFiles);
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
     private readonly ConcurrentDictionary<string, byte> _busy = new(StringComparer.OrdinalIgnoreCase);
+    // Copy-on-write: readers take the reference once; replacements hold _remoteLock, since uploads
+    // finish on thread-pool threads and must not drop each other's entries (or a newer tree).
     private volatile Dictionary<string, RemoteEntry> _remote = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _remoteLock = new();
+    private volatile ChildIndex? _children; // for List; rebuilt when _remote is replaced
     private volatile bool _treeLoaded;
     private Task? _started;
 
@@ -65,7 +69,7 @@ public sealed class SyncService : IDisposable
     {
         var remote = new Dictionary<string, RemoteEntry>(StringComparer.OrdinalIgnoreCase);
         foreach (var e in tree) remote.TryAdd(e.Path, e); // server may be case-sensitive; first wins
-        _remote = remote;
+        lock (_remoteLock) _remote = remote;
         _treeLoaded = true;
         Changed?.Invoke();
         return remote;
@@ -75,6 +79,7 @@ public sealed class SyncService : IDisposable
     {
         _cts.Cancel();
         _api.Dispose();
+        State.Flush();
     }
 
     // ---------- paths & status ----------
@@ -103,12 +108,14 @@ public sealed class SyncService : IDisposable
     public IEnumerable<RemoteEntry> RemoteFilesUnder(string folder) =>
         _remote.Values.Where(e => !e.IsDir && LocalState.IsSameOrUnder(e.Path, folder));
 
-    public FileStatus GetFileStatus(string rel)
+    public FileStatus GetFileStatus(string rel) => GetFileStatus(rel, new FileInfo(LocalPath(rel)));
+
+    /// <summary>Status from an already known local file (e.g. from listing its folder); null when there is none.</summary>
+    public FileStatus GetFileStatus(string rel, FileInfo? local)
     {
         if (_busy.ContainsKey(rel)) return FileStatus.Transferring;
         var remote = _remote.GetValueOrDefault(rel);
-        var local = new FileInfo(LocalPath(rel));
-        if (!local.Exists) return FileStatus.CloudOnly;
+        if (local is not { Exists: true }) return FileStatus.CloudOnly;
         if (remote == null) return FileStatus.LocalOnly;
 
         var snap = State.GetFile(rel);
@@ -125,29 +132,44 @@ public sealed class SyncService : IDisposable
     private static bool LocalChanged(FileInfo local, FileSnapshot snap) =>
         local.Length != snap.Size || MtimeMs(local.LastWriteTimeUtc) != snap.LocalMtime;
 
-    public record Listing(List<RemoteEntry> Remote, List<string> LocalOnlyFiles, List<string> LocalOnlyDirs);
+    /// <param name="LocalFiles">The folder's local files by relative path, to get statuses without touching the disk again.</param>
+    public record Listing(List<RemoteEntry> Remote, List<string> LocalOnlyFiles, List<string> LocalOnlyDirs,
+        Dictionary<string, FileInfo> LocalFiles);
+
+    private sealed record ChildIndex(Dictionary<string, RemoteEntry> Remote, ILookup<string, RemoteEntry> Children);
+
+    private ILookup<string, RemoteEntry> ChildrenOf(Dictionary<string, RemoteEntry> remote)
+    {
+        var index = _children;
+        if (index?.Remote != remote)
+            _children = index = new ChildIndex(remote, remote.Values.ToLookup(e => LocalState.Parent(e.Path), StringComparer.OrdinalIgnoreCase));
+        return index.Children;
+    }
 
     /// <summary>Direct children of a folder: everything on the server plus local-only items.</summary>
     public Listing List(string folder)
     {
-        var remote = _remote.Values.Where(e => LocalState.Parent(e.Path).Equals(folder, StringComparison.OrdinalIgnoreCase)).ToList();
+        var remoteTree = _remote;
+        var remote = ChildrenOf(remoteTree)[folder].ToList();
         var localFiles = new List<string>();
         var localDirs = new List<string>();
-        var dir = LocalPath(folder);
-        if (Directory.Exists(dir))
+        var files = new Dictionary<string, FileInfo>(StringComparer.OrdinalIgnoreCase);
+        var dir = new DirectoryInfo(LocalPath(folder));
+        if (dir.Exists)
         {
-            foreach (var d in Directory.EnumerateDirectories(dir))
+            foreach (var item in dir.EnumerateFileSystemInfos())
             {
-                var rel = ToRel(d);
-                if (!_remote.ContainsKey(rel)) localDirs.Add(rel);
-            }
-            foreach (var f in Directory.EnumerateFiles(dir))
-            {
-                var rel = ToRel(f);
-                if (!IsTemp(f) && !_remote.ContainsKey(rel)) localFiles.Add(rel);
+                var rel = ToRel(item.FullName);
+                if (item is FileInfo fi)
+                {
+                    if (IsTemp(fi.Name)) continue;
+                    files[rel] = fi;
+                    if (!remoteTree.ContainsKey(rel)) localFiles.Add(rel);
+                }
+                else if (!remoteTree.ContainsKey(rel)) localDirs.Add(rel);
             }
         }
-        return new Listing(remote, localFiles, localDirs);
+        return new Listing(remote, localFiles, localDirs, files);
     }
 
     // ---------- refresh / reconcile ----------
@@ -163,89 +185,8 @@ public sealed class SyncService : IDisposable
         {
             var remote = SetRemote(await _api.GetTreeAsync(_cts.Token));
             treeFetched = true;
-
-            // 1. Local files.
-            var localFiles = Directory.EnumerateFiles(Root, "*", System.IO.SearchOption.AllDirectories)
-                .Where(f => !IsTemp(f)).ToList();
-            var localSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var full in localFiles)
-            {
-                var rel = ToRel(full);
-                localSet.Add(rel);
-                if (_busy.ContainsKey(rel)) continue;
-                var r = remote.GetValueOrDefault(rel);
-                var snap = State.GetFile(rel);
-                var fi = new FileInfo(full);
-
-                // Read-only folders: the server copy wins, local edits and new files are never uploaded.
-                var editedLocally = r is { IsDir: false } && (snap == null ? !SameAsRemote(fi, r) : LocalChanged(fi, snap));
-                if (IsReadOnly(rel) && (r == null || editedLocally))
-                {
-                    if (r == null && snap != null && !LocalChanged(fi, snap))
-                    {
-                        RecycleLocal(rel, "云端已删除");
-                        continue;
-                    }
-                    RecycleLocal(rel, r == null ? "只读文件夹，不能新增文件" : "只读文件夹，不能修改，已恢复云端版本");
-                    if (r != null) jobs.Add(DownloadAsync(r, snap?.Pinned ?? true));
-                    continue;
-                }
-
-                if (r == null || r.IsDir)
-                {
-                    if (r != null) continue; // name clash with a remote folder; leave alone
-                    if (snap != null)
-                    {
-                        // Deleted on the server: move our copy to the Recycle Bin (recoverable).
-                        if (LocalChanged(fi, snap)) jobs.Add(UploadAsync(rel, baseMtime: 0));
-                        else RecycleLocal(rel, "云端已删除");
-                    }
-                    else
-                    {
-                        jobs.Add(UploadAsync(rel, baseMtime: 0)); // new local file
-                    }
-                    continue;
-                }
-
-                if (snap == null)
-                {
-                    if (SameAsRemote(fi, r)) State.SetFile(rel, Snapshot(r, fi, pinned: true));
-                    // Server keeps a conflict copy, except for backup archives, which always replace it.
-                    else jobs.Add(UploadAsync(rel, baseMtime: IsBackupArchive(rel) ? r.Mtime : 0));
-                }
-                else if (LocalChanged(fi, snap))
-                {
-                    // Backup archives always replace the server copy (no conflict copy), as above.
-                    jobs.Add(UploadAsync(rel, IsBackupArchive(rel) ? r.Mtime : snap.ServerMtime));
-                }
-                else if (r.Mtime != snap.ServerMtime || r.Size != snap.Size)
-                {
-                    jobs.Add(DownloadAsync(r, snap.Pinned));
-                }
-            }
-
-            // 2. Remote files that are not local.
-            foreach (var r in remote.Values)
-            {
-                if (localSet.Contains(r.Path)) continue;
-                if (r.IsDir)
-                {
-                    if (State.IsInKeptFolder(r.Path)) Directory.CreateDirectory(LocalPath(r.Path));
-                    continue;
-                }
-                // Being downloaded: the file may have landed (with its snapshot) after the scan above.
-                if (_busy.ContainsKey(r.Path)) continue;
-                // A snapshot without a local file means the copy was deleted outside the app.
-                State.RemoveFile(r.Path);
-                if (State.IsInKeptFolder(r.Path)) jobs.Add(DownloadAsync(r, pinned: true));
-            }
-
-            // 3. Snapshots of files that vanished on both sides.
-            foreach (var rel in State.FileKeys())
-                if (!localSet.Contains(rel) && !remote.ContainsKey(rel) && !_busy.ContainsKey(rel)) State.RemoveFile(rel);
-
-            RemoveEmptyStaleDirs(remote);
-            State.Save();
+            // Off the UI thread: a mirror with thousands of files takes a while to scan.
+            await Task.Run(() => Reconcile(remote, jobs));
         }
         catch (Exception ex) when (IsCancelled(ex)) { }
         catch (Exception ex) when (treeFetched || !throwOnTreeError)
@@ -260,12 +201,109 @@ public sealed class SyncService : IDisposable
         await Task.WhenAll(jobs);
     }
 
-    /// <summary>Removes empty local folders that no longer exist on the server.</summary>
-    private void RemoveEmptyStaleDirs(Dictionary<string, RemoteEntry> remote)
+    /// <summary>Brings the mirror and the server in step; transfers it starts are added to <paramref name="jobs"/>.</summary>
+    private void Reconcile(Dictionary<string, RemoteEntry> remote, List<Task> jobs)
     {
-        var dirs = Directory.EnumerateDirectories(Root, "*", System.IO.SearchOption.AllDirectories)
-            .OrderByDescending(d => d.Length);
-        foreach (var d in dirs)
+        // One walk for files and folders; the FileInfos come with size and time already read.
+        var files = new List<FileInfo>();
+        var dirs = new List<DirectoryInfo>();
+        foreach (var item in new DirectoryInfo(Root).EnumerateFileSystemInfos("*", System.IO.SearchOption.AllDirectories))
+        {
+            if (item is FileInfo f) { if (!IsTemp(f.Name)) files.Add(f); }
+            else dirs.Add((DirectoryInfo)item);
+        }
+
+        // 1. Local files.
+        var localSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var fi in files)
+        {
+            var rel = ToRel(fi.FullName);
+            localSet.Add(rel);
+            if (_busy.ContainsKey(rel)) continue;
+            var r = remote.GetValueOrDefault(rel);
+            var snap = State.GetFile(rel);
+
+            // Read-only folders: the server copy wins, local edits and new files are never uploaded.
+            var editedLocally = r is { IsDir: false } && (snap == null ? !SameAsRemote(fi, r) : LocalChanged(fi, snap));
+            if (IsReadOnly(rel) && (r == null || editedLocally))
+            {
+                if (r == null && snap != null && !LocalChanged(fi, snap))
+                {
+                    if (!UploadedSince(rel)) RecycleLocal(rel, "云端已删除");
+                    continue;
+                }
+                RecycleLocal(rel, r == null ? "只读文件夹，不能新增文件" : "只读文件夹，不能修改，已恢复云端版本");
+                if (r != null) jobs.Add(DownloadAsync(r, snap?.Pinned ?? true));
+                continue;
+            }
+
+            if (r == null || r.IsDir)
+            {
+                if (r != null) continue; // name clash with a remote folder; leave alone
+                if (snap != null)
+                {
+                    // Deleted on the server: move our copy to the Recycle Bin (recoverable).
+                    if (LocalChanged(fi, snap)) jobs.Add(UploadAsync(rel, baseMtime: 0));
+                    else if (!UploadedSince(rel)) RecycleLocal(rel, "云端已删除");
+                }
+                else
+                {
+                    jobs.Add(UploadAsync(rel, baseMtime: 0)); // new local file
+                }
+                continue;
+            }
+
+            if (snap == null)
+            {
+                if (SameAsRemote(fi, r)) State.SetFile(rel, Snapshot(r, fi, pinned: true));
+                // Server keeps a conflict copy, except for backup archives, which always replace it.
+                else jobs.Add(UploadAsync(rel, baseMtime: IsBackupArchive(rel) ? r.Mtime : 0));
+            }
+            else if (LocalChanged(fi, snap))
+            {
+                // Backup archives always replace the server copy (no conflict copy), as above.
+                jobs.Add(UploadAsync(rel, IsBackupArchive(rel) ? r.Mtime : snap.ServerMtime));
+            }
+            else if (r.Mtime != snap.ServerMtime || r.Size != snap.Size)
+            {
+                jobs.Add(DownloadAsync(r, snap.Pinned));
+            }
+        }
+
+        // 2. Remote files that are not local.
+        foreach (var r in remote.Values)
+        {
+            if (localSet.Contains(r.Path)) continue;
+            if (r.IsDir)
+            {
+                if (State.IsInKeptFolder(r.Path)) Directory.CreateDirectory(LocalPath(r.Path));
+                continue;
+            }
+            // Being downloaded: the file may have landed (with its snapshot) after the scan above.
+            if (_busy.ContainsKey(r.Path)) continue;
+            // A snapshot without a local file means the copy was deleted outside the app.
+            State.RemoveFile(r.Path);
+            if (State.IsInKeptFolder(r.Path)) jobs.Add(DownloadAsync(r, pinned: true));
+        }
+
+        // 3. Snapshots of files that vanished on both sides.
+        foreach (var rel in State.FileKeys())
+            if (!localSet.Contains(rel) && !remote.ContainsKey(rel) && !_busy.ContainsKey(rel)) State.RemoveFile(rel);
+
+        RemoveEmptyStaleDirs(remote, dirs);
+        State.Save();
+    }
+
+    /// <summary>
+    /// Missing from the tree a scan works on, but uploaded meanwhile (the upload adds it to the current tree):
+    /// not deleted on the server. The scan takes a while, and transfers finish during it.
+    /// </summary>
+    private bool UploadedSince(string rel) => _remote.ContainsKey(rel);
+
+    /// <summary>Removes empty local folders that no longer exist on the server; <paramref name="dirs"/> are all mirror folders.</summary>
+    private void RemoveEmptyStaleDirs(Dictionary<string, RemoteEntry> remote, List<DirectoryInfo> dirs)
+    {
+        foreach (var d in dirs.Select(d => d.FullName).OrderByDescending(d => d.Length))
         {
             var rel = ToRel(d);
             if (remote.ContainsKey(rel) || Directory.EnumerateFileSystemEntries(d).Any()) continue;
@@ -311,7 +349,7 @@ public sealed class SyncService : IDisposable
             try
             {
                 var full = LocalPath(e.Path);
-                await _api.DownloadToFileAsync(e, full, new Progress<long>(item.Report), _cts.Token,
+                await _api.DownloadToFileAsync(e, full, item, _cts.Token,
                     canReplace: () => CanReplaceLocal(e), onRetry: RetryReporter(item));
                 State.SetFile(e.Path, Snapshot(e, new FileInfo(full), pinned));
                 State.Save();
@@ -418,9 +456,9 @@ public sealed class SyncService : IDisposable
                 // Inside the try: the source may have vanished (FileInfo.Length throws), and the slot must still be released.
                 var before = new FileInfo(source);
                 item = _transfers.Start(rel, TransferDirection.Upload, before.Length);
-                var entry = await _api.UploadAsync(source, rel, baseMtime, new Progress<long>(item.Report), _cts.Token, RetryReporter(item));
-                var remote = new Dictionary<string, RemoteEntry>(_remote, StringComparer.OrdinalIgnoreCase) { [rel] = entry };
-                _remote = remote;
+                var entry = await _api.UploadAsync(source, rel, baseMtime, item, _cts.Token, RetryReporter(item));
+                lock (_remoteLock)
+                    _remote = new Dictionary<string, RemoteEntry>(_remote, StringComparer.OrdinalIgnoreCase) { [rel] = entry };
                 if (trackAsKept)
                 {
                     // Snapshot the pre-upload local state: if the file changed meanwhile,
@@ -706,7 +744,7 @@ public sealed class SyncService : IDisposable
             var item = _transfers.Start(e.Path, TransferDirection.Download, e.Size);
             try
             {
-                await _api.DownloadToFileAsync(e, dest, new Progress<long>(item.Report), _cts.Token, onRetry: RetryReporter(item));
+                await _api.DownloadToFileAsync(e, dest, item, _cts.Token, onRetry: RetryReporter(item));
                 item.Complete();
             }
             catch (Exception ex)
@@ -794,25 +832,44 @@ public sealed class SyncService : IDisposable
     }
 
     /// <summary>Deletes on the server (into its recycle bin); local copies go to the Recycle Bin.</summary>
-    public async Task DeleteAsync(string rel, bool isDir)
+    public Task DeleteAsync(string rel, bool isDir) => DeleteManyAsync([(rel, isDir)]);
+
+    /// <summary>
+    /// <see cref="DeleteAsync"/> for several items, refreshing once at the end. Stops at the first
+    /// failure; what was deleted until then is still synced.
+    /// </summary>
+    public async Task DeleteManyAsync(IReadOnlyList<(string Rel, bool IsDir)> items)
     {
-        ThrowIf(TouchesReadOnly(rel));
-        await _api.DeleteAsync(rel, _cts.Token);
-        var full = LocalPath(rel);
         try
         {
-            if (isDir && Directory.Exists(full))
-                FileSystem.DeleteDirectory(full, UIOption.OnlyErrorDialogs, RecycleOption.SendToRecycleBin);
-            else if (!isDir && File.Exists(full))
-                FileSystem.DeleteFile(full, UIOption.OnlyErrorDialogs, RecycleOption.SendToRecycleBin);
+            foreach (var (rel, isDir) in items)
+            {
+                ThrowIf(TouchesReadOnly(rel));
+                await _api.DeleteAsync(rel, _cts.Token);
+                var full = LocalPath(rel);
+                var deletedLocally = true;
+                try
+                {
+                    if (isDir && Directory.Exists(full))
+                        FileSystem.DeleteDirectory(full, UIOption.OnlyErrorDialogs, RecycleOption.SendToRecycleBin);
+                    else if (!isDir && File.Exists(full))
+                        FileSystem.DeleteFile(full, UIOption.OnlyErrorDialogs, RecycleOption.SendToRecycleBin);
+                }
+                catch (Exception ex)
+                {
+                    deletedLocally = false;
+                    _log($"删除本地副本失败（下次刷新时会重试）: {ex.Message}");
+                }
+                // A copy left behind (e.g. open in another program) keeps its snapshots: the next refresh then
+                // sees it as deleted on the server and recycles it, instead of uploading it again as a new file.
+                State.RemoveTree(rel, includeFiles: deletedLocally);
+                _log($"已删除: {rel}");
+            }
         }
-        catch (Exception ex)
+        finally
         {
-            _log($"删除本地副本失败: {ex.Message}");
+            State.Save();
+            await RefreshAsync();
         }
-        State.RemoveTree(rel);
-        State.Save();
-        _log($"已删除: {rel}");
-        await RefreshAsync();
     }
 }

@@ -77,6 +77,11 @@ public sealed class TestServer : IDisposable
 
     public string Url { get; }
     public string DataDir { get; }
+    /// <summary>The server's log lines (one per logged request, e.g. "... GET /api/tree ...").</summary>
+    public ConcurrentQueue<string> Log { get; } = new();
+
+    /// <summary>Tree requests so far (each refresh makes one).</summary>
+    public int TreeRequests => Log.Count(l => l.Contains(" GET /api/tree "));
 
     /// <param name="state">Written as the server's .filecopy/state.json before it starts (read-only folders, TOTP secret, ...).</param>
     public TestServer(object? state = null)
@@ -101,7 +106,7 @@ public sealed class TestServer : IDisposable
             RedirectStandardOutput = true,
         };
         _process = Process.Start(psi)!;
-        _process.ErrorDataReceived += (_, _) => { }; // drain request log
+        _process.ErrorDataReceived += (_, e) => { if (e.Data != null) Log.Enqueue(e.Data); }; // request log
         _process.OutputDataReceived += (_, _) => { };
         _process.BeginErrorReadLine();
         _process.BeginOutputReadLine();

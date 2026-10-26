@@ -46,6 +46,37 @@ public sealed class SyncServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task List_NestedAndCaseInsensitive_FollowsTreeChanges()
+    {
+        _server.Put("Docs/Sub/a.txt", "a");
+        _server.Put("docs2/b.txt", "b");
+        var c = await Connect();
+
+        Assert.Equal(["Docs/Sub"], c.Sync.List("docs").Remote.Select(e => e.Path)); // folder names ignore case
+        Assert.Equal(["Docs/Sub/a.txt"], c.Sync.List("DOCS/sub").Remote.Select(e => e.Path));
+        Assert.Empty(c.Sync.List("nope").Remote);
+
+        _server.Put("Docs/new.txt", "n");
+        await Refresh(c);
+        Assert.Equal(["Docs/Sub", "Docs/new.txt"], c.Sync.List("Docs").Remote.Select(e => e.Path).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public async Task List_GivesLocalFileInfos_ForStatuses()
+    {
+        _server.Put("docs/a.txt", "a");
+        var c = await Connect();
+        await c.Sync.KeepAsync("docs/a.txt", isDir: false).T();
+        c.Write("docs/mine.txt", "m");
+
+        var listing = c.Sync.List("docs");
+
+        Assert.Equal(["docs/a.txt", "docs/mine.txt"], listing.LocalFiles.Keys.Order());
+        Assert.Equal(FileStatus.Kept, c.Sync.GetFileStatus("docs/a.txt", listing.LocalFiles["docs/a.txt"]));
+        Assert.Equal(FileStatus.CloudOnly, c.Sync.GetFileStatus("docs/a.txt", null));
+    }
+
+    [Fact]
     public async Task List_ShowsLocalOnlyItems_AndHidesTempFiles()
     {
         _server.Put("docs/a.txt", "a");
@@ -164,6 +195,40 @@ public sealed class SyncServiceTests : IDisposable
         Assert.Equal("a", File.ReadAllText(Path.Combine(item, "item", "a.txt")));
         Assert.Contains(TestServer.EquipmentId, File.ReadAllText(Path.Combine(item, "meta.json")));
         Assert.DoesNotContain(c.Sync.List("").Remote, e => e.Path.StartsWith(".filecopy"));
+    }
+
+    [Fact]
+    public async Task DeleteMany_RefreshesOnce()
+    {
+        _server.Put("a.txt", "a");
+        _server.Put("b.txt", "b");
+        _server.Put("dir/c.txt", "c");
+        var c = await Connect();
+        var before = _server.TreeRequests;
+
+        await c.Sync.DeleteManyAsync([("a.txt", false), ("b.txt", false), ("dir", true)]).T();
+
+        Assert.False(_server.Exists("a.txt") || _server.Exists("b.txt") || _server.Exists("dir"));
+        Assert.Empty(c.Sync.List("").Remote);
+        Assert.Equal(before + 1, _server.TreeRequests);
+    }
+
+    [Fact]
+    public async Task DeleteMany_StopsAtReadOnlyItem_AndStillRefreshes()
+    {
+        using var server = new TestServer(new { readOnlyFolders = new[] { "ro" } });
+        server.Put("a.txt", "a");
+        server.Put("ro/x.txt", "x");
+        server.Put("z.txt", "z");
+        using var c = new TestClient(server);
+        await c.Sync.StartAsync().T();
+
+        await Assert.ThrowsAsync<ReadOnlyFolderException>(() =>
+            c.Sync.DeleteManyAsync([("a.txt", false), ("ro", true), ("z.txt", false)]).T());
+
+        Assert.False(server.Exists("a.txt"));
+        Assert.True(server.Exists("ro/x.txt") && server.Exists("z.txt"));
+        Assert.DoesNotContain(c.Sync.List("").Remote, e => e.Path == "a.txt"); // refreshed despite the failure
     }
 
     // ---------- keep / free up ----------
@@ -416,6 +481,20 @@ public sealed class SyncServiceTests : IDisposable
         await Refresh(c);
         Assert.Equal("new", _server.Read("new/n.txt"));
         Assert.Equal(FileStatus.Kept, c.Sync.GetFileStatus("new/n.txt"));
+    }
+
+    [Fact]
+    public async Task Refresh_ManyUploadsFinishingTogether_AreAllListed()
+    {
+        // Regression: uploads started by a refresh finish on thread-pool threads; their updates of the
+        // server tree used to overwrite each other.
+        var c = await Connect();
+        var names = Enumerable.Range(0, 24).Select(i => $"many/f{i}.txt").ToList();
+        foreach (var n in names) c.Write(n, n);
+        await Refresh(c);
+
+        Assert.Equal(names.Order(), c.Sync.List("many").Remote.Select(e => e.Path).Order());
+        Assert.All(names, n => Assert.Equal(FileStatus.Kept, c.Sync.GetFileStatus(n)));
     }
 
     [Fact]

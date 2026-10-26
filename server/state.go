@@ -398,6 +398,29 @@ func (s *stateStore) isReadOnly(rel string) bool {
 	return false
 }
 
+// readOnlyMatcher is isReadOnly for many paths at once (the tree): the folders are copied and
+// lowercased once, so the checks take no lock.
+func (s *stateStore) readOnlyMatcher() func(rel string) bool {
+	s.mu.Lock()
+	dirs := make([]string, len(s.st.ReadOnlyFolders))
+	for i, ro := range s.st.ReadOnlyFolders {
+		dirs[i] = strings.ToLower(ro)
+	}
+	s.mu.Unlock()
+	return func(rel string) bool {
+		if len(dirs) == 0 {
+			return false
+		}
+		rel = strings.ToLower(rel)
+		for _, d := range dirs {
+			if pathPrefix(rel, d, false) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
 // touchesReadOnly also covers rel being an ancestor of a read-only folder,
 // which deleting or moving rel would take along.
 func (s *stateStore) touchesReadOnly(rel string) bool {

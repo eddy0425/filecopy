@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 const (
@@ -170,6 +172,74 @@ func TestIncompleteUploadRejected(t *testing.T) {
 	}
 }
 
+// A rejected completion ends the session: its temp file is removed now rather than after a day,
+// and asking again is "not found" rather than a failure on the closed file.
+func TestUploadRejectedAtCompleteIsDiscarded(t *testing.T) {
+	s, ts := newTestServer(t)
+	putFile(t, s, "ro/.keep", "")
+	resp := do(t, ts, "POST", "/api/upload/init", strings.NewReader(`{"path":"ro/n.txt","size":1}`))
+	var init struct{ ID string }
+	json.NewDecoder(resp.Body).Decode(&init)
+	tmp := s.uploads.get(init.ID).tmpPath
+	status(t, do(t, ts, "PUT", "/api/upload/"+init.ID+"?offset=0", strings.NewReader("n")), http.StatusNoContent)
+	if err := s.state.setReadOnly("ro", true); err != nil {
+		t.Fatal(err)
+	}
+	status(t, do(t, ts, "POST", "/api/upload/"+init.ID+"/complete", strings.NewReader("{}")), http.StatusForbidden)
+	if s.uploads.get(init.ID) != nil {
+		t.Error("session kept")
+	}
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Errorf("temp file kept: %v", err)
+	}
+	status(t, do(t, ts, "POST", "/api/upload/"+init.ID+"/complete", strings.NewReader("{}")), http.StatusNotFound)
+}
+
+func TestUploadCompleteTwice(t *testing.T) {
+	_, ts := newTestServer(t)
+	resp := do(t, ts, "POST", "/api/upload/init", strings.NewReader(`{"path":"x.txt","size":1}`))
+	var init struct{ ID string }
+	json.NewDecoder(resp.Body).Decode(&init)
+	status(t, do(t, ts, "PUT", "/api/upload/"+init.ID+"?offset=0", strings.NewReader("x")), http.StatusNoContent)
+	status(t, do(t, ts, "POST", "/api/upload/"+init.ID+"/complete", strings.NewReader("{}")), http.StatusOK)
+	status(t, do(t, ts, "POST", "/api/upload/"+init.ID+"/complete", strings.NewReader("{}")), http.StatusNotFound)
+}
+
+// A completion holds its session's lock while it removes the session; the hourly cleanup must not
+// wait for that lock while holding the manager's, or both (and every later upload) hang.
+func TestUploadCleanupDoesNotDeadlockWithComplete(t *testing.T) {
+	s, ts := newTestServer(t)
+	resp := do(t, ts, "POST", "/api/upload/init", strings.NewReader(`{"path":"x.txt","size":1}`))
+	var init struct{ ID string }
+	json.NewDecoder(resp.Body).Decode(&init)
+	sess := s.uploads.get(init.ID)
+
+	sess.mu.Lock() // a completion in progress
+	cleaned := make(chan struct{})
+	go func() {
+		s.uploads.cleanupStale(24 * time.Hour)
+		close(cleaned)
+	}()
+	// Give the cleanup time to reach the session (with the bug it then holds the manager for good).
+	for deadline := time.Now().Add(200 * time.Millisecond); time.Now().Before(deadline); {
+		if !s.uploads.mu.TryLock() {
+			break
+		}
+		s.uploads.mu.Unlock()
+	}
+	got := make(chan *uploadSession)
+	go func() { got <- s.uploads.get(init.ID) }() // what the completion does next
+	select {
+	case <-got:
+	case <-time.After(5 * time.Second):
+		sess.mu.Unlock() // let it all finish, so the test reports instead of hanging
+		<-got
+		t.Fatal("deadlock: the cleanup holds the manager while waiting for the session")
+	}
+	sess.mu.Unlock()
+	<-cleaned
+}
+
 func TestConflictKeepsOldVersion(t *testing.T) {
 	s, ts := newTestServer(t)
 	first := upload(t, ts, "a.txt", []byte("v1"), 10, 0)
@@ -231,5 +301,83 @@ func TestMoveDeleteMkdir(t *testing.T) {
 func TestCoversAll(t *testing.T) {
 	if !coversAll(map[int64]int64{0: 5, 5: 5}, 10) || coversAll(map[int64]int64{0: 5, 6: 4}, 10) || !coversAll(nil, 0) {
 		t.Fatal("coversAll")
+	}
+}
+
+func TestTreeGzipAndReadOnly(t *testing.T) {
+	s, ts := newTestServer(t)
+	putFile(t, s, "p/RO/a.txt", "A")
+	putFile(t, s, "x.txt", "X")
+	if err := s.state.setReadOnly("p/ro", true); err != nil { // case-insensitive match
+		t.Fatal(err)
+	}
+	want := map[string]bool{"p": false, "p/RO": true, "p/RO/a.txt": true, "x.txt": false}
+	check := func(r io.Reader) {
+		t.Helper()
+		var tree []Entry
+		if err := json.NewDecoder(r).Decode(&tree); err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]bool{}
+		for _, e := range tree {
+			got[e.Path] = e.ReadOnly
+		}
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("tree read-only = %v, want %v", got, want)
+		}
+	}
+
+	// Setting Accept-Encoding by hand turns off the transport's transparent decompression.
+	resp := do(t, ts, "GET", "/api/tree", nil, "Accept-Encoding", "gzip")
+	if resp.Header.Get("Content-Encoding") != "gzip" {
+		t.Fatalf("Content-Encoding = %q", resp.Header.Get("Content-Encoding"))
+	}
+	gz, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check(gz)
+
+	resp = do(t, ts, "GET", "/api/tree", nil, "Accept-Encoding", "identity")
+	if resp.Header.Get("Content-Encoding") != "" {
+		t.Fatalf("uncompressed request got Content-Encoding %q", resp.Header.Get("Content-Encoding"))
+	}
+	check(resp.Body)
+}
+
+func TestAcceptsGzip(t *testing.T) {
+	for h, want := range map[string]bool{
+		"": false, "gzip": true, "deflate, gzip, br": true, "GZIP;q=0.5": true, "gzip;q=0": false, "gzip; q=0.000": false, "br": false,
+	} {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.Header.Set("Accept-Encoding", h)
+		if acceptsGzip(r) != want {
+			t.Errorf("acceptsGzip(%q) = %v", h, !want)
+		}
+	}
+}
+
+func TestWorthLogging(t *testing.T) {
+	for _, c := range []struct {
+		method, url, rng string
+		want             bool
+	}{
+		{"PUT", "/api/upload/x?offset=0", "", false},
+		{"GET", "/api/ping", "", false},
+		{"GET", "/admin/api/status", "", false},
+		{"GET", "/api/file?path=a", "", true},
+		{"GET", "/api/file?path=a", "bytes=0-4194303", true},
+		{"GET", "/api/file?path=a", "bytes=4194304-8388607", false},
+		{"GET", "/admin/api/fs/file?path=a&download=1", "bytes=100-", false},
+		{"POST", "/api/move", "", true},
+		{"GET", "/api/tree", "", true},
+	} {
+		r := httptest.NewRequest(c.method, c.url, nil)
+		if c.rng != "" {
+			r.Header.Set("Range", c.rng)
+		}
+		if worthLogging(r) != c.want {
+			t.Errorf("%s %s (Range %q) logged = %v", c.method, c.url, c.rng, !c.want)
+		}
 	}
 }

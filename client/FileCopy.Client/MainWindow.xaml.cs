@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -19,10 +20,12 @@ public partial class MainWindow : Window
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(15);
     // After unlocking, reopening from the tray within this time needs no code (a code is accepted only once).
     private static readonly TimeSpan UnlockGrace = TimeSpan.FromMinutes(5);
-    private static string LogFile => Path.Combine(Settings.DataDir, "log.txt");
-    private static readonly object LogLock = new(); // not LogFile: that builds a new string (a new lock) on every call
+    private const int LogBatchMs = 250; // log lines reach the list in batches, not one dispatcher post each
 
-    private readonly Settings _settings = Settings.Load();
+    private readonly Settings _settings = Settings.Load(); // first: creates Settings.DataDir
+    private readonly LogWriter _logFile = new(Path.Combine(Settings.DataDir, "log.txt"));
+    private readonly System.Collections.Concurrent.ConcurrentQueue<string> _pendingLog = new();
+    private int _logQueued;
     private readonly TransferQueue _transfers = new();
     private readonly ObservableCollection<FileItem> _items = [];
     private readonly CancellationTokenSource _exit = new();
@@ -32,7 +35,7 @@ public partial class MainWindow : Window
     private int _reloadQueued;
     private bool? _online; // heartbeat result for _sync; null while not connected
     private bool _pinging;
-    private bool _hiddenToTray; // closed to the tray (or started there) since the last unlock
+    private bool _hiddenToTray = true; // started or closed to the tray since the last unlock (not shown yet counts too)
     private DateTime _unlockedAt = DateTime.MinValue;
     private bool _unlocking;
     private readonly System.Windows.Media.Brush _normalStatusBrush; // StatusText's foreground as set in XAML
@@ -48,7 +51,6 @@ public partial class MainWindow : Window
         FilesGrid.ItemsSource = _items;
         TransfersGrid.ItemsSource = _transfers.Items;
         StartMinimized = _settings.AutoConnect && _settings.GetToken().Length > 0;
-        _hiddenToTray = StartMinimized;
         IsVisibleChanged += (_, _) => { if (IsVisible) _hiddenToTray = false; };
         UpdateBreadcrumb();
         Loaded += (_, _) =>
@@ -72,11 +74,11 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// When two-step verification is enabled on the server, asks for a code before the window (or the
-    /// local folder) is shown again after being closed to the tray. Returns false if it stays locked.
+    /// local folder) is shown at startup or again after being closed to the tray. Returns false if it stays locked.
     /// </summary>
     public async Task<bool> UnlockAsync()
     {
-        if (IsVisible || !_settings.ServerTotpEnabled || !_hiddenToTray || DateTime.UtcNow - _unlockedAt < UnlockGrace) return true;
+        if (!LockRequired(IsVisible, _settings.ServerTotpEnabled, _settings.GetToken().Length > 0, _hiddenToTray, _unlockedAt, DateTime.UtcNow)) return true;
         if (_unlocking) return false; // a prompt is already open
         _unlocking = true;
         try
@@ -126,12 +128,21 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Whether showing the window needs a code: hidden since startup or since being closed to the tray, past the
+    /// grace period. Without a token the code cannot be checked and the server is out of reach anyway: the window
+    /// opens so the token can be entered in the settings.
+    /// </summary>
+    internal static bool LockRequired(bool visible, bool totpEnabled, bool hasToken, bool hiddenToTray, DateTime unlockedAt, DateTime now) =>
+        !visible && totpEnabled && hasToken && hiddenToTray && now - unlockedAt >= UnlockGrace;
+
     /// <summary>App exit: stops transfers and any running backup (7-Zip is killed so no orphan keeps writing).</summary>
     public void Shutdown()
     {
         _exit.Cancel();
         try { _backup?.Wait(TimeSpan.FromSeconds(5)); } catch (Exception) { } // the backup task faults with the cancellation
         Disconnect();
+        _logFile.Dispose(); // writes the queued lines
     }
 
     private void Disconnect()
@@ -143,15 +154,16 @@ public partial class MainWindow : Window
 
     public void Log(string message)
     {
-        var line = $"{DateTime.Now:HH:mm:ss}  {message}";
-        lock (LogLock)
+        var now = DateTime.Now;
+        var line = $"{now:HH:mm:ss}  {message}";
+        _logFile.Write($"{now:yyyy-MM-dd} {line}");
+        _pendingLog.Enqueue(line);
+        if (Interlocked.Exchange(ref _logQueued, 1) == 1) return;
+        Dispatcher.BeginInvoke(async () =>
         {
-            try { File.AppendAllText(LogFile, $"{DateTime.Now:yyyy-MM-dd} {line}{Environment.NewLine}"); }
-            catch (IOException) { }
-        }
-        Dispatcher.BeginInvoke(() =>
-        {
-            LogList.Items.Insert(0, line);
+            await Task.Delay(LogBatchMs);
+            Interlocked.Exchange(ref _logQueued, 0);
+            while (_pendingLog.TryDequeue(out var l)) LogList.Items.Insert(0, l);
             while (LogList.Items.Count > MaxLogLines) LogList.Items.RemoveAt(LogList.Items.Count - 1);
         });
     }
@@ -242,7 +254,7 @@ public partial class MainWindow : Window
         {
             _settings.ServerTotpEnabled = ping.Totp;
             changed = true;
-            Log(ping.Totp ? "服务器已启用二步认证：关闭到托盘后再次打开需要验证码" : "服务器已停用二步认证");
+            Log(ping.Totp ? "服务器已启用二步认证：启动或关闭到托盘后再次打开需要验证码" : "服务器已停用二步认证");
         }
         if (!string.IsNullOrEmpty(ping.EquipmentId) && ping.EquipmentId != _settings.EquipmentId)
         {
@@ -295,13 +307,16 @@ public partial class MainWindow : Window
 
     // ---------- listing ----------
 
-    /// <summary>Coalesces bursts of Changed events into one UI reload.</summary>
+    /// <summary>
+    /// Coalesces bursts of Changed events into one UI reload. Every transfer raises Changed when it starts
+    /// and ends, so while transfers run, reloads are spaced further apart.
+    /// </summary>
     private void QueueReload()
     {
         if (Interlocked.Exchange(ref _reloadQueued, 1) == 1) return;
         Dispatcher.BeginInvoke(async () =>
         {
-            await Task.Delay(150);
+            await Task.Delay(_transfers.Items.Any(t => !t.IsFinished) ? 500 : 150);
             Interlocked.Exchange(ref _reloadQueued, 0);
             Reload();
         });
@@ -323,16 +338,15 @@ public partial class MainWindow : Window
         {
             var status = e.IsDir
                 ? (sync.State.IsInKeptFolder(e.Path) ? FileStatus.Kept : FileStatus.CloudOnly)
-                : sync.GetFileStatus(e.Path);
+                : sync.GetFileStatus(e.Path, listing.LocalFiles.GetValueOrDefault(e.Path));
             rows.Add((e.Path, e.IsDir, status, sync.State.IsPinned(e.Path), e.Size, e.Mtime, e.ReadOnly));
         }
         foreach (var d in listing.LocalOnlyDirs) rows.Add((d, true, FileStatus.LocalOnly, false, 0, 0, sync.IsReadOnly(d)));
         foreach (var f in listing.LocalOnlyFiles)
         {
-            var fi = new FileInfo(sync.LocalPath(f));
+            var fi = listing.LocalFiles[f];
             var status = sync.IsBusy(f) ? FileStatus.Transferring : FileStatus.LocalOnly;
-            rows.Add((f, false, status, false, fi.Exists ? fi.Length : 0,
-                fi.Exists ? new DateTimeOffset(fi.LastWriteTimeUtc).ToUnixTimeMilliseconds() : 0, sync.IsReadOnly(f)));
+            rows.Add((f, false, status, false, fi.Length, new DateTimeOffset(fi.LastWriteTimeUtc).ToUnixTimeMilliseconds(), sync.IsReadOnly(f)));
         }
         rows.Sort((a, b) => a.IsDir != b.IsDir ? (a.IsDir ? -1 : 1) : StringComparer.CurrentCultureIgnoreCase.Compare(a.Rel, b.Rel));
 
@@ -412,7 +426,7 @@ public partial class MainWindow : Window
             Log("操作失败: " + ex.Message);
             MessageBox.Show(this, "操作失败: " + ex.Message, "FileCopy");
         }
-        Reload();
+        QueueReload(); // merges with the reload the action's Changed events already queued
     }
 
     private static string JoinRel(string dir, string name) => dir.Length == 0 ? name : dir + "/" + name;
@@ -527,12 +541,7 @@ public partial class MainWindow : Window
         var item = Targets(sender).FirstOrDefault();
         if (item == null) return;
         var name = InputDialog.Show(this, "重命名", "新名称：", item.Name);
-        if (name == null || name == item.Name) return;
-        if (name.IndexOfAny(['/', '\\', ':', '*', '?', '"', '<', '>', '|']) >= 0)
-        {
-            MessageBox.Show(this, "名称不能包含 / \\ : * ? \" < > |", "FileCopy");
-            return;
-        }
+        if (name == null || name == item.Name || !CheckName(name)) return;
         await Run(s => s.RenameAsync(item.Rel, name, item.IsDir));
     }
 
@@ -544,16 +553,35 @@ public partial class MainWindow : Window
         var answer = MessageBox.Show(this, $"从服务器上删除{what}？\n\n删除后进入服务器回收站，可在控制面板中还原；本机的副本会移到回收站。",
             "FileCopy", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
         if (answer != MessageBoxResult.OK) return;
-        await Run(async s =>
-        {
-            foreach (var i in items) await s.DeleteAsync(i.Rel, i.IsDir);
-        });
+        await Run(s => s.DeleteManyAsync(items.Select(i => (i.Rel, i.IsDir)).ToList()));
     }
 
     private async void NewFolder_Click(object sender, RoutedEventArgs e)
     {
         var name = InputDialog.Show(this, "新建文件夹", "文件夹名称：", "新建文件夹");
-        if (name != null) await Run(s => s.MkdirAsync(JoinRel(_folder, name)));
+        if (name != null && CheckName(name)) await Run(s => s.MkdirAsync(JoinRel(_folder, name)));
+    }
+
+    private bool CheckName(string name)
+    {
+        if (NameError(name) is not { } error) return true;
+        MessageBox.Show(this, error, "FileCopy");
+        return false;
+    }
+
+    /// <summary>
+    /// Why <paramref name="name"/> cannot name a new file or folder, or null. Kept copies live in a Windows
+    /// folder, so Windows' rules apply; "a/b" or ".." would also address a different place on the server.
+    /// </summary>
+    internal static string? NameError(string name)
+    {
+        if (name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            return "名称不能包含 / \\ : * ? \" < > | 等字符。";
+        if (name.EndsWith('.') || name.EndsWith(' '))
+            return "名称不能以句点或空格结尾。";
+        if (Regex.IsMatch(name, @"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$", RegexOptions.IgnoreCase))
+            return "名称不能是 CON、NUL 等系统保留名。";
+        return null;
     }
 
     private async void UploadFiles_Click(object sender, RoutedEventArgs e)
@@ -597,6 +625,19 @@ public partial class MainWindow : Window
     private void OpenLocal_Click(object sender, RoutedEventArgs e) => OpenSyncFolder();
 
     private void Settings_Click(object sender, RoutedEventArgs e) => OpenSettings();
+
+    // ---------- transfers / log ----------
+
+    private void ClearTab_Click(object sender, RoutedEventArgs e)
+    {
+        if (BottomTabs.SelectedIndex == 0) _transfers.ClearFinished();
+        else LogList.Items.Clear();
+    }
+
+    private void ClearTransfers_Click(object sender, RoutedEventArgs e) => _transfers.ClearFinished();
+
+    // Only the list: log.txt is kept for troubleshooting.
+    private void ClearLog_Click(object sender, RoutedEventArgs e) => LogList.Items.Clear();
 
     private async void Backup_Click(object sender, RoutedEventArgs e)
     {

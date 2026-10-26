@@ -8,8 +8,11 @@ namespace FileCopy.Client.Transfers;
 
 public enum TransferDirection { Upload, Download }
 
-/// <summary>One row in the transfer list. Updated from worker threads, marshalled to the UI.</summary>
-public sealed class TransferItem : INotifyPropertyChanged
+/// <summary>
+/// One row in the transfer list. Updated from worker threads, marshalled to the UI. Passed to the
+/// transfer as its IProgress directly: Progress&lt;T&gt; would post each report to the UI thread once more.
+/// </summary>
+public sealed class TransferItem : INotifyPropertyChanged, IProgress<long>
 {
     private const string Running = "进行中";
     // Uploads run chunks in parallel, so progress from healthy chunks would otherwise hide a retry at once.
@@ -46,10 +49,18 @@ public sealed class TransferItem : INotifyPropertyChanged
         }
     }
     public string Status { get => _status; private set { _status = value; OnChanged(); } }
+    /// <summary>Completed or failed.</summary>
+    public bool IsFinished => _finished;
 
+    /// <summary>Bytes done so far. Parallel chunks may report out of order: the count never goes back.</summary>
     public void Report(long done)
     {
-        _done = done;
+        for (long cur = Interlocked.Read(ref _done); done > cur;)
+        {
+            var seen = Interlocked.CompareExchange(ref _done, done, cur);
+            if (seen == cur) break;
+            cur = seen;
+        }
         if (_retrying)
         {
             lock (_statusLock)
@@ -140,5 +151,12 @@ public sealed class TransferQueue
             while (Items.Count > MaxItems) Items.RemoveAt(Items.Count - 1);
         });
         return item;
+    }
+
+    /// <summary>Removes completed and failed transfers; running ones stay. Call on the UI thread.</summary>
+    public void ClearFinished()
+    {
+        for (int i = Items.Count - 1; i >= 0; i--)
+            if (Items[i].IsFinished) Items.RemoveAt(i);
     }
 }

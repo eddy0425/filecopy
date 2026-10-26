@@ -642,3 +642,27 @@ func TestReadOnlyUnsetStillEnforced(t *testing.T) {
 	status(t, a.do("POST", "/admin/api/readonly", `{"path":"A","readOnly":false}`), http.StatusNoContent)
 	status(t, a.do("POST", "/admin/api/readonly", `{"path":"a","readOnly":false}`), http.StatusNoContent)
 }
+
+func TestDiskStatusRefreshesInBackground(t *testing.T) {
+	s, _ := newTestServer(t)
+	now := time.Now()
+	s.now = func() time.Time { return now }
+	putFile(t, s, "a.txt", "12345")
+	if d := s.diskStatus(); d.Used != 5 || d.Total == 0 {
+		t.Fatalf("first call = %+v", d)
+	}
+	putFile(t, s, "b.txt", "123")
+	if d := s.diskStatus(); d.Used != 5 {
+		t.Fatalf("cached = %+v", d)
+	}
+
+	now = now.Add(diskCacheTTL)
+	if d := s.diskStatus(); d.Used != 5 { // stale: answered at once, measured in the background
+		t.Fatalf("stale = %+v", d)
+	}
+	for deadline := time.Now().Add(5 * time.Second); s.diskStatus().Used != 8; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("background measurement did not land")
+		}
+	}
+}

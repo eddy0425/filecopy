@@ -19,6 +19,10 @@ const (
 	maxChunkSize     = 64 << 20
 )
 
+// chunkBufs holds copy buffers for chunk bodies: fewer, larger reads and writes than io.Copy's
+// 32 KB, so fewer WriteAt calls and traffic-meter locks per chunk, without a new buffer each time.
+var chunkBufs = sync.Pool{New: func() any { b := make([]byte, 1<<20); return &b }}
+
 type uploadSession struct {
 	id       string
 	rel      string // target path relative to root
@@ -64,24 +68,35 @@ func (m *uploadManager) closeAll() {
 	}
 }
 
-// cleanupStale removes abandoned sessions and leftover temp files.
+// discard ends a session that cannot complete, removing its temp file. The caller holds sess.mu.
+func (m *uploadManager) discard(sess *uploadSession) {
+	sess.file.Close()
+	os.Remove(sess.tmpPath)
+	m.remove(sess.id)
+}
+
+// cleanupStale removes abandoned sessions and leftover temp files. A session's lock is never taken
+// while holding the manager's: completing an upload takes them the other way round.
 func (m *uploadManager) cleanupStale(maxAge time.Duration) {
 	cutoff := time.Now().Add(-maxAge)
 	m.mu.Lock()
-	active := map[string]bool{}
-	for id, s := range m.sessions {
-		s.mu.Lock()
-		if s.lastUsed.Before(cutoff) {
-			s.file.Close()
-			os.Remove(s.tmpPath)
-			delete(m.sessions, id)
-		} else {
-			active[filepath.Base(s.tmpPath)] = true
-		}
-		s.mu.Unlock()
+	sessions := make([]*uploadSession, 0, len(m.sessions))
+	for _, sess := range m.sessions {
+		sessions = append(sessions, sess)
 	}
 	m.mu.Unlock()
+	active := map[string]bool{}
+	for _, sess := range sessions {
+		sess.mu.Lock()
+		if sess.lastUsed.Before(cutoff) && m.get(sess.id) == sess {
+			m.discard(sess)
+		} else {
+			active[filepath.Base(sess.tmpPath)] = true
+		}
+		sess.mu.Unlock()
+	}
 
+	// Sessions started since the snapshot have new temp files, which are not old enough to remove.
 	files, _ := os.ReadDir(m.dir)
 	for _, f := range files {
 		if active[f.Name()] {
@@ -156,7 +171,9 @@ func (s *Server) handleUploadChunk(w http.ResponseWriter, r *http.Request) {
 	}
 	body := http.MaxBytesReader(w, r.Body, maxLen)
 	// Write directly at offset; chunks may arrive in parallel and out of order.
-	n, err := io.Copy(&offsetWriter{f: sess.file, off: offset}, body)
+	buf := chunkBufs.Get().(*[]byte)
+	n, err := io.CopyBuffer(&offsetWriter{f: sess.file, off: offset}, body, *buf)
+	chunkBufs.Put(buf)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -185,7 +202,12 @@ func (s *Server) handleUploadComplete(w http.ResponseWriter, r *http.Request) {
 
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
+	if s.uploads.get(id) != sess { // completed (or discarded) while this request waited for the lock
+		http.Error(w, "upload session not found", http.StatusNotFound)
+		return
+	}
 	if sess.client && s.state.isReadOnly(sess.rel) { // made read-only while uploading
+		s.uploads.discard(sess)
 		s.denyReadOnly(w)
 		return
 	}
@@ -193,32 +215,38 @@ func (s *Server) handleUploadComplete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "upload incomplete", http.StatusConflict)
 		return
 	}
-	if err := sess.file.Sync(); err != nil {
+	// From here on the session is finished either way: a failure discards it.
+	fail := func(err error) {
+		s.uploads.discard(sess)
 		httpFsError(w, err)
+	}
+	if err := sess.file.Sync(); err != nil {
+		fail(err)
 		return
 	}
 	sess.file.Close()
 
 	if !notAlias(s.root, sess.rel) { // a long name created since init got this as its 8.3 alias
+		s.uploads.discard(sess)
 		http.Error(w, errBadPath.Error(), http.StatusBadRequest)
 		return
 	}
 	abs := filepath.Join(s.root, filepath.FromSlash(sess.rel))
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-		httpFsError(w, err)
+		fail(err)
 		return
 	}
 	if info, err := os.Stat(abs); err == nil && !info.IsDir() &&
 		req.BaseMtime != info.ModTime().UnixMilli() {
 		cp := conflictName(abs, time.Now())
 		if err := os.Rename(abs, cp); err != nil {
-			httpFsError(w, err)
+			fail(err)
 			return
 		}
 		log.Printf("conflict: kept previous version of %s as %s", sess.rel, filepath.Base(cp))
 	}
 	if err := os.Rename(sess.tmpPath, abs); err != nil {
-		httpFsError(w, err)
+		fail(err)
 		return
 	}
 	mt := time.UnixMilli(sess.mtime)
