@@ -35,11 +35,14 @@ public sealed class SyncService : IDisposable
     /// <summary>Raised (on a worker thread) whenever listings or statuses may have changed.</summary>
     public event Action? Changed;
 
-    public SyncService(string serverUrl, string token, string root, TransferQueue transfers, Action<string> log)
+    /// <summary>Result of the latest successful ping (null before the first one).</summary>
+    public PingResult? LastPing { get; private set; }
+
+    public SyncService(string serverUrl, string token, string equipmentId, string root, TransferQueue transfers, Action<string> log)
     {
         Root = Path.GetFullPath(root).TrimEnd('\\');
         Directory.CreateDirectory(Root);
-        _api = new ServerApi(serverUrl, token);
+        _api = new ServerApi(serverUrl, token, equipmentId);
         _transfers = transfers;
         _log = log;
         State = LocalState.Load(serverUrl, Root);
@@ -50,7 +53,7 @@ public sealed class SyncService : IDisposable
 
     private async Task StartCoreAsync()
     {
-        await _api.PingAsync(_cts.Token);
+        await PingAsync();
         // No periodic refresh: syncing only happens at startup, on "刷新"/F5, on backup, and after file actions.
         await RefreshAsync(throwOnTreeError: true);
         // RefreshAsync is skipped when another refresh already holds the lock; callers of StartAsync
@@ -173,6 +176,20 @@ public sealed class SyncService : IDisposable
                 var r = remote.GetValueOrDefault(rel);
                 var snap = State.GetFile(rel);
                 var fi = new FileInfo(full);
+
+                // Read-only folders: the server copy wins, local edits and new files are never uploaded.
+                var editedLocally = r is { IsDir: false } && (snap == null ? !SameAsRemote(fi, r) : LocalChanged(fi, snap));
+                if (IsReadOnly(rel) && (r == null || editedLocally))
+                {
+                    if (r == null && snap != null && !LocalChanged(fi, snap))
+                    {
+                        RecycleLocal(rel, "云端已删除");
+                        continue;
+                    }
+                    RecycleLocal(rel, r == null ? "只读文件夹，不能新增文件" : "只读文件夹，不能修改，已恢复云端版本");
+                    if (r != null) jobs.Add(DownloadAsync(r, snap?.Pinned ?? true));
+                    continue;
+                }
 
                 if (r == null || r.IsDir)
                 {
@@ -346,7 +363,36 @@ public sealed class SyncService : IDisposable
         (attempt, ex) => item.Retrying(attempt, ServerApi.MaxRetries, ErrorText(ex));
 
     /// <summary>Checks that the server is reachable (used for the connection heartbeat).</summary>
-    public Task PingAsync() => _api.PingAsync(_cts.Token);
+    public async Task<PingResult> PingAsync() => LastPing = await _api.PingAsync(_cts.Token);
+
+    /// <summary>Checks a two-step verification code with the server (to unlock the window).</summary>
+    public Task<bool> VerifyTotpAsync(string code) => _api.VerifyTotpAsync(code, _cts.Token);
+
+    /// <summary>Uses an EquipmentId assigned in the control panel from now on.</summary>
+    public void SetEquipmentId(string equipmentId) => _api.SetEquipmentId(equipmentId);
+
+    // ---------- read-only folders ----------
+
+    /// <summary>
+    /// Whether rel is (or would be created) inside a folder set read-only in the control panel.
+    /// The nearest known server entry decides: the server marks everything at or under such a folder.
+    /// </summary>
+    public bool IsReadOnly(string rel)
+    {
+        var remote = _remote;
+        for (var p = rel; p.Length > 0; p = LocalState.Parent(p))
+            if (remote.TryGetValue(p, out var e)) return e.ReadOnly;
+        return false;
+    }
+
+    /// <summary>Like <see cref="IsReadOnly"/>, but also true when rel contains a read-only folder (deleting or moving it would take that along).</summary>
+    private bool TouchesReadOnly(string rel) =>
+        IsReadOnly(rel) || _remote.Values.Any(e => e.ReadOnly && LocalState.IsSameOrUnder(e.Path, rel));
+
+    private static void ThrowIf(bool readOnly)
+    {
+        if (readOnly) throw new ReadOnlyFolderException();
+    }
 
     /// <summary>Uploads a file from the mirror folder and records the synced state.</summary>
     private Task UploadAsync(string rel, long baseMtime) => UploadFromAsync(LocalPath(rel), rel, baseMtime, trackAsKept: true);
@@ -439,6 +485,11 @@ public sealed class SyncService : IDisposable
                     State.SetFile(rel, Snapshot(e, local, pinned: true));
                     State.Save();
                     Changed?.Invoke();
+                }
+                else if (e.ReadOnly)
+                {
+                    RecycleLocal(rel, "只读文件夹，不能修改，已恢复云端版本");
+                    await DownloadAsync(e, pinned: true);
                 }
                 else await UploadAsync(rel, baseMtime: IsBackupArchive(rel) ? e.Mtime : 0);
             }
@@ -555,6 +606,7 @@ public sealed class SyncService : IDisposable
     /// <summary>Uploads files/folders from anywhere (e.g. dragged from Explorer) into a server folder.</summary>
     public async Task UploadPathsAsync(IEnumerable<string> paths, string targetFolder)
     {
+        ThrowIf(targetFolder.Length > 0 && IsReadOnly(targetFolder));
         var jobs = new List<Task>();
         foreach (var p in paths)
         {
@@ -673,6 +725,7 @@ public sealed class SyncService : IDisposable
 
     public async Task MkdirAsync(string rel)
     {
+        ThrowIf(IsReadOnly(rel));
         await _api.MkdirAsync(rel, _cts.Token);
         if (State.IsInKeptFolder(rel)) Directory.CreateDirectory(LocalPath(rel));
         _log($"已新建文件夹: {rel}");
@@ -682,6 +735,7 @@ public sealed class SyncService : IDisposable
     public async Task RenameAsync(string rel, string newName, bool isDir)
     {
         var target = Join(LocalState.Parent(rel), newName);
+        ThrowIf(TouchesReadOnly(rel) || IsReadOnly(target));
         var from = LocalPath(rel);
         var to = LocalPath(target);
         // Refuse early (the server also answers 409); this also catches local-only items the server
@@ -739,9 +793,10 @@ public sealed class SyncService : IDisposable
             await Task.WhenAll(pinnedTargets.Where(e => !File.Exists(LocalPath(e.Path))).Select(e => DownloadAsync(e, pinned: true)));
     }
 
-    /// <summary>Deletes on the server; local copies go to the Recycle Bin.</summary>
+    /// <summary>Deletes on the server (into its recycle bin); local copies go to the Recycle Bin.</summary>
     public async Task DeleteAsync(string rel, bool isDir)
     {
+        ThrowIf(TouchesReadOnly(rel));
         await _api.DeleteAsync(rel, _cts.Token);
         var full = LocalPath(rel);
         try

@@ -87,8 +87,45 @@ public sealed class SyncServiceTests : IDisposable
     [Fact]
     public async Task Start_WithWrongToken_Throws()
     {
-        using var bad = new SyncService(_server.Url, "wrong-token-0123456789", TestEnv.NewDir("mirror"), new(), _ => { });
+        using var bad = new SyncService(_server.Url, "wrong-token-0123456789", TestServer.EquipmentId, TestEnv.NewDir("mirror"), new(), _ => { });
         await Assert.ThrowsAsync<UnauthorizedException>(() => bad.StartAsync().T());
+    }
+
+    [Fact]
+    public async Task ReadOnlyFolder_RevertsLocalEdits_AndRefusesChanges()
+    {
+        using var server = new TestServer(new { readOnlyFolders = new[] { "ro" } });
+        server.Put("ro/a.txt", "server");
+        server.Put("rw.txt", "x");
+        var c = new TestClient(server);
+        _cleanup.Add(c);
+        await c.Sync.StartAsync().T();
+        Assert.True(c.Sync.IsReadOnly("ro"));
+        Assert.True(c.Sync.IsReadOnly("ro/a.txt"));
+        Assert.True(c.Sync.IsReadOnly("ro/new/file.txt")); // not on the server yet: decided by the nearest parent
+        Assert.False(c.Sync.IsReadOnly("rw.txt"));
+
+        await c.Sync.KeepAsync("ro", isDir: true).T();
+        Assert.Equal("server", c.Read("ro/a.txt"));
+        c.Write("ro/a.txt", "edited");
+        c.Write("ro/new.txt", "new");
+        await Refresh(c);
+
+        Assert.Equal("server", c.Read("ro/a.txt")); // restored from the server
+        Assert.False(File.Exists(c.Local("ro/new.txt")));
+        Assert.Equal("server", server.Read("ro/a.txt"));
+        Assert.False(server.Exists("ro/new.txt"));
+        Assert.Contains("只读文件夹", c.LogText);
+
+        await Assert.ThrowsAsync<ReadOnlyFolderException>(() => c.Sync.DeleteAsync("ro/a.txt", false).T());
+        await Assert.ThrowsAsync<ReadOnlyFolderException>(() => c.Sync.RenameAsync("ro", "other", true).T());
+        await Assert.ThrowsAsync<ReadOnlyFolderException>(() => c.Sync.MkdirAsync("ro/sub").T());
+        var local = Path.Combine(TestEnv.NewDir("src"), "up.txt");
+        File.WriteAllText(local, "u");
+        await Assert.ThrowsAsync<ReadOnlyFolderException>(() => c.Sync.UploadPathsAsync([local], "ro").T());
+        Assert.True(server.Exists("ro/a.txt"));
+        await c.Sync.DeleteAsync("rw.txt", false).T(); // elsewhere everything still works
+        Assert.False(server.Exists("rw.txt"));
     }
 
     // ---------- keep / free up ----------
@@ -694,7 +731,7 @@ public sealed class SyncServiceTests : IDisposable
         await Refresh(c);
 
         Assert.Equal(["Docs"], Directory.GetDirectories(c.Root).Select(Path.GetFileName));
-        Assert.Equal(["Docs"], Directory.GetDirectories(_server.DataDir).Select(Path.GetFileName).Where(n => n != ".uploads"));
+        Assert.Equal(["Docs"], Directory.GetDirectories(_server.DataDir).Select(Path.GetFileName).Where(n => n is not (".uploads" or ".filecopy")));
         Assert.Equal("a", c.Read("Docs/a.txt"));
         Assert.True(c.Sync.State.IsInKeptFolder("Docs/a.txt"));
         Assert.Equal(FileStatus.Kept, c.Sync.GetFileStatus("Docs/a.txt"));

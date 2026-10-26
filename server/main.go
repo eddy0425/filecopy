@@ -1,5 +1,5 @@
-// FileCopy server: a tiny file store with token auth, Range downloads and
-// parallel chunked uploads. Standard library only.
+// FileCopy server: a tiny file store with token auth, Range downloads,
+// parallel chunked uploads and a web control panel at /admin. Standard library only.
 package main
 
 import (
@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -16,14 +17,27 @@ type Config struct {
 	Listen  string `json:"listen"`
 	DataDir string `json:"dataDir"`
 	Token   string `json:"token"`
-	TLSCert string `json:"tlsCert,omitempty"`
-	TLSKey  string `json:"tlsKey,omitempty"`
+	// AdminPassword is the initial control panel password (the token when empty); it can be
+	// changed in the panel, which then stores its own hash in .filecopy/state.json.
+	AdminPassword string `json:"adminPassword,omitempty"`
+	TLSCert       string `json:"tlsCert,omitempty"`
+	TLSKey        string `json:"tlsKey,omitempty"`
 }
 
 type Server struct {
-	root    string // absolute data dir
-	token   string
-	uploads *uploadManager
+	root          string // absolute data dir
+	token         string
+	adminPassword string
+	now           func() time.Time
+	uploads       *uploadManager
+	state         *stateStore
+	trash         *trashStore
+	sessions      *sessionStore
+	limiter       *failLimiter
+
+	diskMu sync.Mutex
+	disk   diskStatus
+	diskAt time.Time
 }
 
 func NewServer(dataDir, token string) (*Server, error) {
@@ -31,28 +45,50 @@ func NewServer(dataDir, token string) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Join(root, uploadDirName), 0o755); err != nil {
+	trashDir := filepath.Join(root, internalDirName, "trash")
+	for _, d := range []string{filepath.Join(root, uploadDirName), trashDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return nil, err
+		}
+	}
+	s := &Server{root: root, token: token, now: time.Now}
+	now := func() time.Time { return s.now() } // tests swap s.now
+	if s.state, err = loadState(statePath(root), now); err != nil {
 		return nil, err
 	}
-	s := &Server{root: root, token: token}
 	s.uploads = newUploadManager(filepath.Join(root, uploadDirName))
+	s.trash = &trashStore{dir: trashDir, now: now}
+	s.sessions = &sessionStore{m: map[string]*adminSession{}}
+	s.limiter = newFailLimiter(now)
 	return s, nil
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/tree", s.handleTree)
-	mux.HandleFunc("GET /api/file", s.handleDownload)
-	mux.HandleFunc("DELETE /api/file", s.handleDelete)
-	mux.HandleFunc("POST /api/move", s.handleMove)
-	mux.HandleFunc("POST /api/mkdir", s.handleMkdir)
-	mux.HandleFunc("POST /api/upload/init", s.handleUploadInit)
-	mux.HandleFunc("PUT /api/upload/{id}", s.handleUploadChunk)
-	mux.HandleFunc("POST /api/upload/{id}/complete", s.handleUploadComplete)
-	mux.HandleFunc("GET /api/ping", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]string{"status": "ok"})
-	})
-	return s.auth(logRequests(mux))
+	s.registerFileRoutes(mux, "/api", s.clientAPI)
+	mux.Handle("GET /api/ping", s.clientAPI(s.handlePing))
+	mux.Handle("POST /api/totp/verify", s.clientAPI(s.handleTOTPVerify))
+	s.registerAdminRoutes(mux)
+	return logRequests(mux)
+}
+
+// maintain runs hourly cleanups and saves the traffic counters periodically.
+func (s *Server) maintain() {
+	s.uploads.cleanupStale(24 * time.Hour)
+	s.trash.purge()
+	flush := time.NewTicker(30 * time.Second)
+	hourly := time.NewTicker(time.Hour)
+	for {
+		select {
+		case <-flush.C:
+			if err := s.state.flush(); err != nil {
+				log.Printf("save state: %v", err)
+			}
+		case <-hourly.C:
+			s.uploads.cleanupStale(24 * time.Hour)
+			s.trash.purge()
+		}
+	}
 }
 
 func main() {
@@ -81,12 +117,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("init: %v", err)
 	}
-	s.uploads.cleanupStale(24 * time.Hour)
-	go func() {
-		for range time.Tick(time.Hour) {
-			s.uploads.cleanupStale(24 * time.Hour)
-		}
-	}()
+	s.adminPassword = cfg.AdminPassword
+	go s.maintain()
 
 	srv := &http.Server{
 		Addr:              cfg.Listen,

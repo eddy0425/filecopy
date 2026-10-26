@@ -23,8 +23,8 @@
             <MenuItem Header="释放空间(_F)" Click="FreeUp_Click" />
             <Separator />
             <MenuItem Header="下载到..." Click="DownloadTo_Click" />
-            <MenuItem Header="重命名(_M)" Click="Rename_Click" />
-            <MenuItem Header="删除(_D)" Click="Delete_Click" />
+            <MenuItem Header="重命名(_M)" Click="Rename_Click" IsEnabled="{Binding CanEdit}" />
+            <MenuItem Header="删除(_D)" Click="Delete_Click" IsEnabled="{Binding CanEdit}" />
         </ContextMenu>
     </Window.Resources>
 
@@ -42,9 +42,9 @@
         <StackPanel Orientation="Horizontal" Margin="10,10,10,6">
             <Button x:Name="UpButton" Content="← 上级" Style="{StaticResource ToolButton}" Click="Up_Click" />
             <Button Content="⟳ 刷新" Style="{StaticResource ToolButton}" Click="Refresh_Click" />
-            <Button Content="⬆ 上传文件" Style="{StaticResource ToolButton}" Click="UploadFiles_Click" />
-            <Button Content="⬆ 上传文件夹" Style="{StaticResource ToolButton}" Click="UploadFolder_Click" />
-            <Button Content="＋ 新建文件夹" Style="{StaticResource ToolButton}" Click="NewFolder_Click" />
+            <Button x:Name="UploadFilesButton" Content="⬆ 上传文件" Style="{StaticResource ToolButton}" Click="UploadFiles_Click" />
+            <Button x:Name="UploadFolderButton" Content="⬆ 上传文件夹" Style="{StaticResource ToolButton}" Click="UploadFolder_Click" />
+            <Button x:Name="NewFolderButton" Content="＋ 新建文件夹" Style="{StaticResource ToolButton}" Click="NewFolder_Click" />
             <Button Content="打开本地文件夹" Style="{StaticResource ToolButton}" Click="OpenLocal_Click" />
             <Button x:Name="BackupButton" Content="🗄 备份" Style="{StaticResource ToolButton}" Click="Backup_Click"
                     ToolTip="压缩 D:\Config、D:\Recipes、D:\MechanicalParameters 并上传到 backup 文件夹" />
@@ -52,23 +52,27 @@
         </StackPanel>
 
         <!-- Breadcrumb -->
-        <ItemsControl x:Name="Breadcrumb" Grid.Row="1" Margin="10,0,10,6">
-            <ItemsControl.ItemsPanel>
-                <ItemsPanelTemplate>
-                    <StackPanel Orientation="Horizontal" />
-                </ItemsPanelTemplate>
-            </ItemsControl.ItemsPanel>
-            <ItemsControl.ItemTemplate>
-                <DataTemplate>
-                    <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="›" Margin="4,0" Foreground="Gray" VerticalAlignment="Center"
-                                   Visibility="{Binding SeparatorVisibility}" />
-                        <Button Content="{Binding Name}" Tag="{Binding Rel}" Click="Crumb_Click"
-                                Background="Transparent" BorderThickness="0" Padding="4,2" Cursor="Hand" FontSize="14" />
-                    </StackPanel>
-                </DataTemplate>
-            </ItemsControl.ItemTemplate>
-        </ItemsControl>
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="10,0,10,6">
+            <ItemsControl x:Name="Breadcrumb">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <StackPanel Orientation="Horizontal" />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="›" Margin="4,0" Foreground="Gray" VerticalAlignment="Center"
+                                       Visibility="{Binding SeparatorVisibility}" />
+                            <Button Content="{Binding Name}" Tag="{Binding Rel}" Click="Crumb_Click"
+                                    Background="Transparent" BorderThickness="0" Padding="4,2" Cursor="Hand" FontSize="14" />
+                        </StackPanel>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <TextBlock x:Name="ReadOnlyHint" Text="🔒 只读文件夹：只能下载，不能上传、新建、重命名或删除" Foreground="#8A5300"
+                       Margin="12,0,0,0" VerticalAlignment="Center" Visibility="Collapsed" />
+        </StackPanel>
 
         <!-- File list (Explorer style) -->
         <Grid Grid.Row="2" Margin="10,0,10,0">
@@ -125,7 +129,7 @@
                             <DataTemplate>
                                 <StackPanel Orientation="Horizontal">
                                     <Image Source="{Binding Icon}" Width="16" Height="16" Margin="0,0,6,0" />
-                                    <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
                                 </StackPanel>
                             </DataTemplate>
                         </DataGridTemplateColumn.CellTemplate>

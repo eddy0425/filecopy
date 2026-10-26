@@ -20,6 +20,7 @@ public sealed class FileItem : INotifyPropertyChanged
     private bool _pinned;
     private long _size;
     private long _mtime;
+    private bool _readOnly;
 
     public FileItem(string rel, bool isDir)
     {
@@ -39,6 +40,11 @@ public sealed class FileItem : INotifyPropertyChanged
     public long Size => _size;
     public long Mtime => _mtime;
 
+    /// <summary>In a folder set read-only in the control panel: download only.</summary>
+    public bool ReadOnly => _readOnly;
+    public bool CanEdit => !_readOnly;
+    public string DisplayName => _readOnly && IsDir ? Name + "  🔒" : Name;
+
     /// <summary>True when the item has (or, for folders, is set to have) a local copy.</summary>
     public bool IsLocal => _status != FileStatus.CloudOnly;
 
@@ -52,7 +58,7 @@ public sealed class FileItem : INotifyPropertyChanged
 
     public Brush StatusBrush => Syncing || _status == FileStatus.CloudOnly ? Blue : Green;
 
-    public string StatusText => _status switch
+    public string StatusText => (_status switch
     {
         FileStatus.CloudOnly => "联机时可用",
         FileStatus.Kept when _pinned => "始终在此设备上可用",
@@ -61,19 +67,20 @@ public sealed class FileItem : INotifyPropertyChanged
         FileStatus.PendingDownload => "等待下载",
         FileStatus.Transferring => "正在同步",
         _ => "",
-    };
+    }) + (_readOnly ? "（只读）" : "");
 
     // Explorer style: whole KB rounded up, with thousands separators; blank for folders.
     public string SizeText => IsDir ? "" : $"{(_size + 1023) / 1024:N0} KB";
     public string MtimeText => _mtime == 0 ? "" : DateTimeOffset.FromUnixTimeMilliseconds(_mtime).LocalDateTime.ToString("yyyy'/'MM'/'dd HH:mm");
 
-    public void Update(FileStatus status, bool pinned, long size, long mtime)
+    public void Update(FileStatus status, bool pinned, long size, long mtime, bool readOnly)
     {
-        if (status == _status && pinned == _pinned && size == _size && mtime == _mtime) return;
+        if (status == _status && pinned == _pinned && size == _size && mtime == _mtime && readOnly == _readOnly) return;
         _status = status;
         _pinned = pinned;
         _size = size;
         _mtime = mtime;
+        _readOnly = readOnly;
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(null)); // refresh all bindings
     }
 

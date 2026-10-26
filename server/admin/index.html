@@ -1,0 +1,794 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>FileCopy 控制面板</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif; color: #1f2328; background: #f5f6f8; }
+  button { font: inherit; padding: 4px 12px; border: 1px solid #c8ccd1; border-radius: 4px; background: #fff; cursor: pointer; }
+  button:hover:not(:disabled) { background: #eef3fb; border-color: #7aa7e0; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+  button.primary:hover:not(:disabled) { background: #1a5fcc; }
+  button.danger { color: #c62828; }
+  button.link { border: 0; background: none; color: #1f6feb; padding: 0 4px; }
+  input[type=text], input[type=password] { font: inherit; padding: 5px 8px; border: 1px solid #c8ccd1; border-radius: 4px; }
+  .hidden { display: none !important; }
+  .muted { color: #6e7781; }
+  .error { color: #c62828; min-height: 1.5em; }
+  .warn { background: #fff4e5; border-bottom: 1px solid #f0c36d; padding: 6px 20px; color: #8a5300; }
+
+  #login { max-width: 340px; margin: 12vh auto; background: #fff; padding: 28px; border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,.08); }
+  #login h1 { font-size: 20px; margin: 0 0 18px; }
+  #login label { display: block; margin: 10px 0 4px; }
+  #login input { width: 100%; }
+  #login button { width: 100%; margin-top: 16px; padding: 7px; }
+
+  header { display: flex; align-items: center; gap: 24px; background: #fff; border-bottom: 1px solid #dde1e5; padding: 0 20px; height: 52px; }
+  header h1 { font-size: 17px; margin: 0; }
+  nav { display: flex; gap: 4px; flex: 1; }
+  nav button { border: 0; border-radius: 0; background: none; padding: 14px 14px 12px; border-bottom: 2px solid transparent; }
+  nav button.active { border-bottom-color: #1f6feb; color: #1f6feb; }
+  main { padding: 20px; max-width: 1400px; }
+  section.card { background: #fff; border: 1px solid #dde1e5; border-radius: 8px; padding: 16px 18px; margin-bottom: 16px; }
+  section.card h2 { font-size: 15px; margin: 0 0 12px; }
+
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #eef0f2; white-space: nowrap; }
+  th { font-weight: 600; color: #57606a; background: #fafbfc; }
+  td.num, th.num { text-align: right; }
+  tr.sel td { background: #e5efff; }
+  tbody tr:hover td { background: #f3f7fd; }
+  tbody tr.sel:hover td { background: #dbe8fd; }
+  tr.conflict td { background: #fdecec; }
+
+  .stats { display: flex; gap: 16px; flex-wrap: wrap; }
+  .stat { background: #fff; border: 1px solid #dde1e5; border-radius: 8px; padding: 12px 18px; min-width: 170px; }
+  .stat .v { font-size: 20px; font-weight: 600; }
+  .bar { height: 6px; background: #eef0f2; border-radius: 3px; margin-top: 6px; overflow: hidden; }
+  .bar div { height: 100%; background: #1f6feb; }
+
+  .switch { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; }
+  .switch input { display: none; }
+  .switch .track { width: 44px; height: 24px; border-radius: 12px; background: #c62828; position: relative; transition: .2s; }
+  .switch .track::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: .2s; }
+  .switch input:checked + .track { background: #2e9d48; }
+  .switch input:checked + .track::after { left: 23px; }
+
+  .badge { display: inline-block; padding: 0 7px; border-radius: 9px; font-size: 12px; line-height: 18px; margin-right: 4px; }
+  .badge.on { background: #dcf3e1; color: #1a7f37; }
+  .badge.off { background: #eef0f2; color: #6e7781; }
+  .badge.bad { background: #c62828; color: #fff; }
+  .badge.pend { background: #fff4e5; color: #8a5300; }
+
+  .toolbar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+  .toolbar .sep { width: 1px; height: 22px; background: #dde1e5; margin: 0 4px; }
+  .crumbs { margin-bottom: 10px; }
+  .crumbs button { border: 0; background: none; padding: 2px 4px; color: #1f6feb; }
+  .crumbs span { color: #8c959f; }
+  #fileTable td.name { cursor: default; }
+  #fileTable td.name .ico { display: inline-block; width: 20px; }
+  #drop { border: 2px dashed transparent; border-radius: 8px; }
+  #drop.over { border-color: #1f6feb; background: #f0f6ff; }
+  #uploads div { font-size: 13px; padding: 2px 0; }
+
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.3); display: flex; align-items: center; justify-content: center; z-index: 10; }
+  .modal .box { background: #fff; border-radius: 8px; padding: 18px 20px; width: 460px; max-height: 80vh; display: flex; flex-direction: column; }
+  .modal h3 { margin: 0 0 10px; font-size: 15px; }
+  .modal .list { overflow: auto; border: 1px solid #dde1e5; border-radius: 4px; flex: 1; min-height: 200px; }
+  .modal .list div { padding: 3px 8px; cursor: pointer; white-space: nowrap; }
+  .modal .list div:hover { background: #f3f7fd; }
+  .modal .list div.sel { background: #e5efff; }
+  .modal .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+
+  .form-row { margin: 8px 0; }
+  .form-row label { display: inline-block; width: 90px; }
+  #qr svg { width: 200px; height: 200px; }
+  code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; word-break: break-all; }
+</style>
+</head>
+<body>
+
+<div id="login" class="hidden">
+  <h1>FileCopy 控制面板</h1>
+  <form id="loginForm">
+    <label for="pw">管理密码</label>
+    <input type="password" id="pw" autocomplete="current-password" autofocus>
+    <div id="codeRow">
+      <label for="code">二步验证码</label>
+      <input type="text" id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 位数字">
+    </div>
+    <button class="primary" type="submit">登录</button>
+    <div class="error" id="loginError"></div>
+  </form>
+</div>
+
+<div id="app" class="hidden">
+  <div id="httpsWarn" class="warn hidden">当前通过 HTTP 访问，密码和验证码以明文传输。建议为服务器配置 HTTPS（例如用 Caddy 反向代理）。</div>
+  <header>
+    <h1>FileCopy 控制面板</h1>
+    <nav>
+      <button data-tab="conn" class="active">连接</button>
+      <button data-tab="files">文件</button>
+      <button data-tab="trash">回收站</button>
+      <button data-tab="security">安全</button>
+    </nav>
+    <button id="logout">退出登录</button>
+  </header>
+  <main>
+    <!-- 连接 -->
+    <div id="tab-conn">
+      <div class="stats" style="margin-bottom:16px">
+        <div class="stat"><div class="muted">数据占用</div><div class="v" id="diskUsed">-</div></div>
+        <div class="stat"><div class="muted">回收站占用</div><div class="v" id="diskTrash">-</div></div>
+        <div class="stat"><div class="muted">磁盘剩余 / 总量</div><div class="v" id="diskFree">-</div><div class="bar"><div id="diskBar" style="width:0"></div></div></div>
+      </div>
+      <section class="card">
+        <h2>客户端连接</h2>
+        <label class="switch"><input type="checkbox" id="accept"><span class="track"></span><span id="acceptText"></span></label>
+        <div class="muted" style="margin-top:6px">关闭后所有客户端请求被拒绝，正在进行的传输立即中断；控制面板不受影响。服务器重启后保持当前状态。</div>
+      </section>
+      <section class="card">
+        <div class="toolbar"><h2 style="margin:0;flex:1">设备</h2><button id="resetAll">全部重置流量</button></div>
+        <table>
+          <thead><tr><th>设备 ID</th><th>状态</th><th>IP</th><th>最后活动</th><th class="num">↑ 上传速度</th><th class="num">↓ 下载速度</th><th class="num">↑ 累计上传</th><th class="num">↓ 累计下载</th><th>统计起始</th><th></th></tr></thead>
+          <tbody id="devices"></tbody>
+        </table>
+        <div class="muted" style="margin-top:8px">点击设备 ID 可修改，客户端下次连接服务器时自动同步。同一设备 ID 同时从多个 IP 连接时标红。</div>
+      </section>
+    </div>
+
+    <!-- 文件 -->
+    <div id="tab-files" class="hidden">
+      <section class="card" id="drop">
+        <div class="crumbs" id="crumbs"></div>
+        <div class="toolbar">
+          <button id="upFiles">⬆ 上传文件</button>
+          <button id="upFolder">⬆ 上传文件夹</button>
+          <button id="mkdir">＋ 新建文件夹</button>
+          <span class="sep"></span>
+          <button id="fDownload" data-sel>下载</button>
+          <button id="fRename" data-sel="1">重命名</button>
+          <button id="fCopy" data-sel>复制到…</button>
+          <button id="fMove" data-sel>移动到…</button>
+          <button id="fDelete" data-sel class="danger">删除</button>
+          <span class="sep"></span>
+          <button id="fReadOnly" data-sel>🔒 设为只读</button>
+          <button id="fWritable" data-sel>取消只读</button>
+          <span class="sep"></span>
+          <button id="fRefresh">⟳ 刷新</button>
+          <input type="file" id="fileInput" multiple class="hidden">
+          <input type="file" id="folderInput" webkitdirectory class="hidden">
+        </div>
+        <table id="fileTable">
+          <thead><tr><th style="width:28px"><input type="checkbox" id="selAll"></th><th>名称</th><th>修改日期</th><th class="num">大小</th></tr></thead>
+          <tbody id="files"></tbody>
+        </table>
+        <div class="muted" id="filesEmpty" style="padding:12px 10px">此文件夹为空。可以把文件或文件夹拖到这里上传。</div>
+        <div id="uploads"></div>
+        <div class="muted" style="margin-top:8px">🔒 只读文件夹：客户端只能下载，不能上传、新建、重命名或删除；控制面板不受限制。删除的项目进入回收站。</div>
+      </section>
+    </div>
+
+    <!-- 回收站 -->
+    <div id="tab-trash" class="hidden">
+      <section class="card">
+        <div class="toolbar"><h2 style="margin:0;flex:1">回收站</h2><span class="muted">删除超过 30 天的项目会被自动清理</span><button id="emptyTrash" class="danger">清空回收站</button></div>
+        <table>
+          <thead><tr><th>原位置</th><th>类型</th><th class="num">大小</th><th>删除时间</th><th>删除者</th><th></th></tr></thead>
+          <tbody id="trash"></tbody>
+        </table>
+        <div class="muted hidden" id="trashEmpty" style="padding:12px 10px">回收站是空的。</div>
+      </section>
+    </div>
+
+    <!-- 安全 -->
+    <div id="tab-security" class="hidden">
+      <section class="card">
+        <h2>二步认证（TOTP）</h2>
+        <div id="totpOff">
+          <p>未启用。启用后，登录控制面板需要输入验证器 App 中的 6 位验证码；客户端关闭到托盘后再次打开也需要验证码。</p>
+          <button class="primary" id="totpSetup">启用二步认证</button>
+          <div id="totpSetupBox" class="hidden" style="margin-top:14px">
+            <p>1. 用 Google Authenticator、Microsoft Authenticator 等验证器 App 扫描二维码：</p>
+            <div id="qr"></div>
+            <p class="muted">无法扫码时可手动输入密钥：<code id="totpSecret"></code></p>
+            <p>2. 输入 App 显示的 6 位验证码确认：</p>
+            <input type="text" id="totpEnableCode" inputmode="numeric" maxlength="6" placeholder="6 位数字">
+            <button class="primary" id="totpEnable">确认启用</button>
+          </div>
+        </div>
+        <div id="totpOn" class="hidden">
+          <p><span class="badge on">已启用</span> 登录控制面板和解锁客户端需要验证码。</p>
+          <input type="text" id="totpDisableCode" inputmode="numeric" maxlength="6" placeholder="当前验证码">
+          <button class="danger" id="totpDisable">停用二步认证</button>
+        </div>
+        <div class="error" id="totpError"></div>
+      </section>
+      <section class="card">
+        <h2>修改管理密码</h2>
+        <form id="pwForm">
+          <div class="form-row"><label>当前密码</label><input type="password" id="pwOld" autocomplete="current-password"></div>
+          <div class="form-row"><label>新密码</label><input type="password" id="pwNew" autocomplete="new-password" placeholder="至少 8 位"></div>
+          <div class="form-row"><label>确认新密码</label><input type="password" id="pwNew2" autocomplete="new-password"></div>
+          <div class="form-row" id="pwCodeRow"><label>验证码</label><input type="text" id="pwCode" inputmode="numeric" maxlength="6"></div>
+          <button class="primary" type="submit">修改密码</button>
+          <span class="muted">修改后其他已登录的会话将被退出。</span>
+          <div class="error" id="pwError"></div>
+        </form>
+      </section>
+    </div>
+  </main>
+</div>
+
+<div id="picker" class="modal hidden">
+  <div class="box">
+    <h3 id="pickerTitle">选择目标文件夹</h3>
+    <div class="list" id="pickerList"></div>
+    <div class="actions"><button id="pickerCancel">取消</button><button class="primary" id="pickerOk">确定</button></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const FS = "/admin/api/fs";
+
+const MESSAGES = {
+  "already exists": "已存在同名项",
+  "too many attempts": "尝试次数过多，请 5 分钟后再试",
+  "wrong password or code": "密码或验证码错误",
+  "wrong code": "验证码错误",
+  "password too short": "新密码至少 8 位",
+  "equipment id already in use": "该设备 ID 已被其他设备使用",
+  "invalid equipment id": "设备 ID 无效：不能为空，不能包含 / \\ : * ? \" < > | 等字符",
+  "device not found": "设备不存在",
+  "cannot move a folder into itself": "不能移动到自身内部",
+  "cannot copy a folder into itself": "不能复制到自身内部",
+  "not a folder": "只能把文件夹设为只读",
+  "not found": "项目不存在（可能已被删除）",
+  "trash item not found": "回收站中没有该项目",
+  "run setup first": "请先点击“启用二步认证”",
+};
+
+async function api(method, url, body) {
+  const opt = { method, headers: { "X-Requested-With": "filecopy" } };
+  if (body !== undefined) {
+    opt.headers["Content-Type"] = "application/json";
+    opt.body = JSON.stringify(body);
+  }
+  const r = await fetch(url, opt);
+  if (r.status === 401 && !url.endsWith("/login")) {
+    showLogin();
+    throw new Error("登录已失效，请重新登录");
+  }
+  if (!r.ok) {
+    const t = (await r.text()).trim();
+    throw new Error(MESSAGES[t] || t || ("HTTP " + r.status));
+  }
+  return (r.headers.get("Content-Type") || "").includes("json") ? r.json() : null;
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function fmtSize(n) {
+  if (n < 1024) return n + " B";
+  const u = ["KB", "MB", "GB", "TB"];
+  let i = -1;
+  do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+  return n.toFixed(n < 10 ? 2 : n < 100 ? 1 : 0) + " " + u[i];
+}
+function fmtRate(n) { return n > 0 ? fmtSize(n) + "/s" : "-"; }
+function pad(n) { return String(n).padStart(2, "0"); }
+function fmtTime(ms) {
+  if (!ms) return "-";
+  const d = new Date(ms);
+  return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function ago(ms, now) {
+  const s = Math.max(0, Math.round((now - ms) / 1000));
+  if (s < 60) return s + " 秒前";
+  if (s < 3600) return Math.floor(s / 60) + " 分钟前";
+  if (s < 86400) return Math.floor(s / 3600) + " 小时前";
+  return fmtTime(ms);
+}
+function baseName(p) { return p.slice(p.lastIndexOf("/") + 1); }
+function parentOf(p) { const i = p.lastIndexOf("/"); return i < 0 ? "" : p.slice(0, i); }
+function join(dir, name) { return dir ? dir + "/" + name : name; }
+function fail(e) { alert(e.message || e); }
+
+// ---------- login ----------
+
+let totpEnabled = false;
+
+async function init() {
+  const r = await fetch("/admin/api/session");
+  const s = await r.json();
+  totpEnabled = s.totp;
+  if (s.loggedIn) showApp(); else showLogin();
+}
+
+function showLogin() {
+  stopPolling();
+  $("app").classList.add("hidden");
+  $("login").classList.remove("hidden");
+  fetch("/admin/api/session").then(r => r.json()).then(s => {
+    totpEnabled = s.totp;
+    $("codeRow").classList.toggle("hidden", !s.totp);
+  });
+  $("pw").focus();
+}
+
+$("loginForm").onsubmit = async e => {
+  e.preventDefault();
+  $("loginError").textContent = "";
+  try {
+    await api("POST", "/admin/api/login", { password: $("pw").value, code: $("code").value });
+    $("pw").value = $("code").value = "";
+    showApp();
+  } catch (err) {
+    $("loginError").textContent = err.message;
+  }
+};
+
+$("logout").onclick = async () => {
+  try { await api("POST", "/admin/api/logout"); } catch (e) { }
+  showLogin();
+};
+
+function showApp() {
+  $("login").classList.add("hidden");
+  $("app").classList.remove("hidden");
+  $("httpsWarn").classList.toggle("hidden", location.protocol === "https:");
+  switchTab(currentTab);
+}
+
+// ---------- tabs ----------
+
+let currentTab = "conn";
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => switchTab(b.dataset.tab));
+
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll("nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
+  for (const t of ["conn", "files", "trash", "security"]) $("tab-" + t).classList.toggle("hidden", t !== tab);
+  stopPolling();
+  if (tab === "conn") { refreshStatus(); pollTimer = setInterval(refreshStatus, 2000); }
+  if (tab === "files") loadTree();
+  if (tab === "trash") loadTrash();
+  if (tab === "security") loadSecurity();
+}
+
+let pollTimer = null;
+function stopPolling() { if (pollTimer) clearInterval(pollTimer); pollTimer = null; }
+
+// ---------- connections, devices ----------
+
+let editingDevice = null; // keep the row's input while polling
+
+async function refreshStatus() {
+  let st;
+  try { st = await api("GET", "/admin/api/status"); } catch (e) { return; }
+  totpEnabled = st.totp;
+  $("accept").checked = st.accepting;
+  $("acceptText").innerHTML = st.accepting ? "<b>允许连接</b>" : "<b style='color:#c62828'>已断开，拒绝所有客户端</b>";
+  const d = st.disk;
+  $("diskUsed").textContent = fmtSize(d.used);
+  $("diskTrash").textContent = fmtSize(d.trash);
+  $("diskFree").textContent = d.total ? `${fmtSize(d.free)} / ${fmtSize(d.total)}` : "-";
+  $("diskBar").style.width = d.total ? ((1 - d.free / d.total) * 100).toFixed(1) + "%" : "0";
+  if (editingDevice) return;
+  const rows = st.devices.map(dv => {
+    const badges = [
+      dv.online ? '<span class="badge on">在线</span>' : '<span class="badge off">离线</span>',
+      dv.conflict ? `<span class="badge bad" title="${esc(dv.ips.join(", "))}">ID 冲突</span>` : "",
+      dv.pending ? `<span class="badge pend" title="客户端仍在使用旧 ID：${esc(dv.pending.join(", "))}">待同步</span>` : "",
+    ].join("");
+    const ips = dv.conflict ? dv.ips.join("<br>") : esc(dv.lastIP);
+    return `<tr class="${dv.conflict ? "conflict" : ""}" data-id="${esc(dv.id)}">
+      <td><button class="link" data-act="rename" title="点击修改">${esc(dv.id)}</button></td>
+      <td>${badges}</td><td>${ips}</td><td>${dv.lastSeen ? ago(dv.lastSeen, st.now) : "-"}</td>
+      <td class="num">${fmtRate(dv.upRate)}</td><td class="num">${fmtRate(dv.downRate)}</td>
+      <td class="num">${fmtSize(dv.bytesUp)}</td><td class="num">${fmtSize(dv.bytesDown)}</td>
+      <td>${fmtTime(dv.resetAt)}</td>
+      <td><button data-act="reset">重置</button> <button class="danger" data-act="delete">删除</button></td></tr>`;
+  });
+  $("devices").innerHTML = rows.join("") || '<tr><td colspan="10" class="muted">还没有客户端连接过。</td></tr>';
+}
+
+$("accept").onchange = async e => {
+  const accept = e.target.checked;
+  if (!accept && !confirm("断开后所有客户端将无法连接，正在进行的传输会中断。确定断开？")) {
+    e.target.checked = true;
+    return;
+  }
+  try { await api("POST", "/admin/api/connections", { accept }); } catch (err) { fail(err); }
+  refreshStatus();
+};
+
+$("resetAll").onclick = async () => {
+  if (!confirm("把所有设备的累计流量清零？")) return;
+  try { await api("POST", "/admin/api/devices/reset", { all: true }); } catch (e) { fail(e); }
+  refreshStatus();
+};
+
+$("devices").onclick = async e => {
+  const btn = e.target.closest("button");
+  if (!btn) return;
+  const id = btn.closest("tr").dataset.id;
+  try {
+    if (btn.dataset.act === "reset") {
+      if (!confirm(`把 ${id} 的累计流量清零？`)) return;
+      await api("POST", "/admin/api/devices/reset", { id });
+    } else if (btn.dataset.act === "delete") {
+      if (!confirm(`删除设备记录 ${id}？（不影响客户端，它下次连接时会重新出现）`)) return;
+      await api("DELETE", "/admin/api/devices?id=" + encodeURIComponent(id));
+    } else if (btn.dataset.act === "rename") {
+      editingDevice = id;
+      const newId = prompt(`修改设备 ID（客户端下次连接时自动同步到其设置）：`, id);
+      editingDevice = null;
+      if (newId === null || newId.trim() === id) return;
+      await api("POST", "/admin/api/devices/rename", { id, newId: newId.trim() });
+    }
+  } catch (err) { fail(err); }
+  refreshStatus();
+};
+
+// ---------- files ----------
+
+let tree = [];          // all entries from fs/tree
+let cwd = "";           // current folder
+let selected = new Set();
+
+async function loadTree() {
+  try { tree = await api("GET", FS + "/tree"); } catch (e) { fail(e); return; }
+  const dirs = new Set(tree.filter(e => e.isDir).map(e => e.path));
+  while (cwd && !dirs.has(cwd)) cwd = parentOf(cwd); // the folder was removed
+  renderFiles();
+}
+
+function entryOf(p) { return tree.find(e => e.path === p); }
+
+function renderFiles() {
+  const items = tree.filter(e => parentOf(e.path) === cwd)
+    .sort((a, b) => (b.isDir - a.isDir) || baseName(a.path).localeCompare(baseName(b.path), "zh-CN"));
+  selected = new Set([...selected].filter(p => items.some(e => e.path === p)));
+  $("files").innerHTML = items.map(e => `
+    <tr data-path="${esc(e.path)}" class="${selected.has(e.path) ? "sel" : ""}">
+      <td><input type="checkbox" ${selected.has(e.path) ? "checked" : ""}></td>
+      <td class="name"><span class="ico">${e.isDir ? "📁" : "📄"}</span>${esc(baseName(e.path))}${e.readOnly && e.isDir && !isInReadOnlyParent(e.path) ? " 🔒" : ""}</td>
+      <td>${fmtTime(e.mtime)}</td><td class="num">${e.isDir ? "" : fmtSize(e.size)}</td></tr>`).join("");
+  $("filesEmpty").classList.toggle("hidden", items.length > 0);
+  $("selAll").checked = items.length > 0 && selected.size === items.length;
+
+  const parts = cwd ? cwd.split("/") : [];
+  let html = `<button data-path="">云端文件</button>`;
+  parts.forEach((p, i) => { html += ` <span>›</span> <button data-path="${esc(parts.slice(0, i + 1).join("/"))}">${esc(p)}</button>`; });
+  const cur = entryOf(cwd);
+  if (cur && cur.readOnly) html += ` <span class="badge pend">🔒 只读文件夹</span>`;
+  $("crumbs").innerHTML = html;
+  updateToolbar();
+}
+
+// A folder inside a read-only folder is read-only too; only mark the folder that was set.
+function isInReadOnlyParent(p) { const e = entryOf(parentOf(p)); return !!(e && e.readOnly); }
+
+function updateToolbar() {
+  const n = selected.size;
+  document.querySelectorAll("[data-sel]").forEach(b => b.disabled = b.dataset.sel === "1" ? n !== 1 : n === 0);
+  const sel = [...selected].map(entryOf);
+  const folders = sel.every(e => e && e.isDir);
+  $("fReadOnly").disabled = n === 0 || !folders || sel.every(e => e.readOnly);
+  $("fWritable").disabled = n === 0 || !folders || !sel.some(e => e.readOnly && !isInReadOnlyParent(e.path));
+}
+
+$("crumbs").onclick = e => { const b = e.target.closest("button"); if (b) { cwd = b.dataset.path; selected.clear(); renderFiles(); } };
+
+$("files").onclick = e => {
+  const tr = e.target.closest("tr");
+  if (!tr) return;
+  const p = tr.dataset.path;
+  if (e.target.type === "checkbox" || e.ctrlKey || e.metaKey) {
+    selected.has(p) ? selected.delete(p) : selected.add(p);
+  } else {
+    selected = new Set([p]);
+  }
+  showSelection();
+};
+
+// Updates the rows in place: re-rendering would replace the row under the pointer and break double-click.
+function showSelection() {
+  const rows = $("files").querySelectorAll("tr");
+  rows.forEach(tr => {
+    const on = selected.has(tr.dataset.path);
+    tr.classList.toggle("sel", on);
+    tr.querySelector("input").checked = on;
+  });
+  $("selAll").checked = rows.length > 0 && selected.size === rows.length;
+  updateToolbar();
+}
+$("files").ondblclick = e => {
+  const tr = e.target.closest("tr");
+  if (!tr) return;
+  const ent = entryOf(tr.dataset.path);
+  if (ent.isDir) { cwd = ent.path; selected.clear(); renderFiles(); }
+  else download(ent.path);
+};
+$("selAll").onchange = e => {
+  selected = e.target.checked ? new Set(tree.filter(x => parentOf(x.path) === cwd).map(x => x.path)) : new Set();
+  showSelection();
+};
+$("fRefresh").onclick = loadTree;
+
+function download(p) {
+  const a = document.createElement("a");
+  a.href = FS + "/file?path=" + encodeURIComponent(p) + "&download=1";
+  a.download = baseName(p);
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+$("fDownload").onclick = () => {
+  const sel = [...selected].map(entryOf);
+  if (sel.some(e => e.isDir)) { alert("文件夹不能直接下载，请进入文件夹选择文件。"); return; }
+  sel.forEach((e, i) => setTimeout(() => download(e.path), i * 400));
+};
+
+$("mkdir").onclick = async () => {
+  const name = prompt("新文件夹名称：", "新建文件夹");
+  if (!name) return;
+  try { await api("POST", FS + "/mkdir", { path: join(cwd, name.trim()) }); } catch (e) { fail(e); }
+  loadTree();
+};
+
+$("fRename").onclick = async () => {
+  const p = [...selected][0];
+  const name = prompt("新名称：", baseName(p));
+  if (!name || name === baseName(p)) return;
+  try { await api("POST", FS + "/move", { from: p, to: join(parentOf(p), name.trim()) }); } catch (e) { fail(e); }
+  selected.clear();
+  loadTree();
+};
+
+$("fDelete").onclick = async () => {
+  const sel = [...selected];
+  if (!confirm(`删除 ${sel.length} 个项目？删除后进入回收站，可以还原。`)) return;
+  for (const p of sel) {
+    try { await api("DELETE", FS + "/file?path=" + encodeURIComponent(p)); } catch (e) { fail(e); break; }
+  }
+  selected.clear();
+  loadTree();
+};
+
+async function setReadOnly(ro) {
+  for (const p of selected) {
+    try { await api("POST", "/admin/api/readonly", { path: p, readOnly: ro }); } catch (e) { fail(e); break; }
+  }
+  loadTree();
+}
+$("fReadOnly").onclick = () => setReadOnly(true);
+$("fWritable").onclick = () => setReadOnly(false);
+
+// Folder picker for copy / move.
+function pickFolder(title, exclude) {
+  return new Promise(resolve => {
+    let chosen = null;
+    const dirs = [""].concat(tree.filter(e => e.isDir).map(e => e.path).sort((a, b) => a.localeCompare(b, "zh-CN")))
+      .filter(d => !exclude.some(x => d === x || d.startsWith(x + "/")));
+    $("pickerTitle").textContent = title;
+    $("pickerList").innerHTML = dirs.map(d => {
+      const depth = d ? d.split("/").length : 0;
+      return `<div data-path="${esc(d)}" style="padding-left:${8 + depth * 18}px">📁 ${d ? esc(baseName(d)) : "云端文件（根目录）"}</div>`;
+    }).join("");
+    $("pickerList").onclick = e => {
+      const div = e.target.closest("div[data-path]");
+      if (!div) return;
+      $("pickerList").querySelectorAll("div").forEach(x => x.classList.remove("sel"));
+      div.classList.add("sel");
+      chosen = div.dataset.path;
+    };
+    const close = v => { $("picker").classList.add("hidden"); resolve(v); };
+    $("pickerOk").onclick = () => chosen === null ? alert("请选择目标文件夹") : close(chosen);
+    $("pickerCancel").onclick = () => close(null);
+    $("picker").classList.remove("hidden");
+  });
+}
+
+async function copyOrMove(move) {
+  const sel = [...selected];
+  const target = await pickFolder(move ? "移动到…" : "复制到…", move ? sel : []);
+  if (target === null) return;
+  for (const p of sel) {
+    const to = join(target, baseName(p));
+    if (move && to === p) continue;
+    try { await api("POST", FS + (move ? "/move" : "/copy"), { from: p, to }); }
+    catch (e) { fail(new Error(`${baseName(p)}：${e.message}`)); break; }
+  }
+  selected.clear();
+  loadTree();
+}
+$("fCopy").onclick = () => copyOrMove(false);
+$("fMove").onclick = () => copyOrMove(true);
+
+// ---------- uploads (same chunked protocol as the Windows client) ----------
+
+const UPLOAD_PARALLEL = 3;
+
+async function putChunk(id, off, blob) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const r = await fetch(`${FS}/upload/${id}?offset=${off}`, { method: "PUT", body: blob, headers: { "X-Requested-With": "filecopy" } });
+      if (r.ok) return;
+      if (r.status < 500 || attempt >= 4) throw new Error((await r.text()).trim() || "HTTP " + r.status);
+    } catch (e) {
+      if (attempt >= 4) throw e;
+    }
+    await new Promise(res => setTimeout(res, attempt * 1000));
+  }
+}
+
+async function uploadFile(file, rel, line) {
+  const existing = entryOf(rel);
+  const init = await api("POST", FS + "/upload/init", { path: rel, size: file.size, mtime: file.lastModified });
+  const offsets = [];
+  for (let o = 0; o < file.size; o += init.chunkSize) offsets.push(o);
+  let done = 0;
+  const show = () => line.textContent = `⬆ ${rel}  ${file.size ? Math.floor(done / file.size * 100) : 100}%`;
+  show();
+  const worker = async () => {
+    while (offsets.length) {
+      const o = offsets.shift();
+      const blob = file.slice(o, o + init.chunkSize);
+      await putChunk(init.id, o, blob);
+      done += blob.size;
+      show();
+    }
+  };
+  await Promise.all(Array.from({ length: UPLOAD_PARALLEL }, worker));
+  // Replacing the current version on purpose: pass its mtime so no conflict copy is kept.
+  await api("POST", `${FS}/upload/${init.id}/complete`, { baseMtime: existing && !existing.isDir ? existing.mtime : 0 });
+}
+
+// files: [{file, rel}] with rel relative to the current folder.
+async function uploadAll(files) {
+  if (!files.length) return;
+  const taken = files.filter(f => { const e = entryOf(join(cwd, f.rel)); return e && !e.isDir; });
+  if (taken.length && !confirm(`${taken.length} 个文件已存在（如 ${taken[0].rel}），覆盖？`)) return;
+  const base = cwd;
+  for (const f of files) {
+    const rel = join(base, f.rel);
+    const line = document.createElement("div");
+    $("uploads").appendChild(line);
+    try {
+      await uploadFile(f.file, rel, line);
+      line.textContent = `✔ ${rel}`;
+    } catch (e) {
+      line.textContent = `✖ ${rel}：${MESSAGES[e.message] || e.message}`;
+      line.style.color = "#c62828";
+    }
+  }
+  setTimeout(() => { $("uploads").querySelectorAll("div").forEach(d => { if (d.textContent.startsWith("✔")) d.remove(); }); }, 5000);
+  loadTree();
+}
+
+$("upFiles").onclick = () => $("fileInput").click();
+$("upFolder").onclick = () => $("folderInput").click();
+$("fileInput").onchange = e => { uploadAll([...e.target.files].map(f => ({ file: f, rel: f.name }))); e.target.value = ""; };
+$("folderInput").onchange = e => { uploadAll([...e.target.files].map(f => ({ file: f, rel: f.webkitRelativePath }))); e.target.value = ""; };
+
+const drop = $("drop");
+drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
+drop.ondragleave = e => { if (!drop.contains(e.relatedTarget)) drop.classList.remove("over"); };
+drop.ondrop = async e => {
+  e.preventDefault();
+  drop.classList.remove("over");
+  const entries = [...e.dataTransfer.items].map(i => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
+  const files = [];
+  const walk = async (entry, prefix) => {
+    if (entry.isFile) {
+      files.push({ file: await new Promise((res, rej) => entry.file(res, rej)), rel: prefix + entry.name });
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      for (;;) {
+        const batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+        if (!batch.length) break;
+        for (const child of batch) await walk(child, prefix + entry.name + "/");
+      }
+    }
+  };
+  for (const en of entries) await walk(en, "");
+  uploadAll(files);
+};
+
+// ---------- recycle bin ----------
+
+async function loadTrash() {
+  let items;
+  try { items = await api("GET", "/admin/api/trash"); } catch (e) { fail(e); return; }
+  $("trash").innerHTML = items.map(it => `
+    <tr data-id="${esc(it.id)}"><td>${it.isDir ? "📁" : "📄"} ${esc(it.path)}</td><td>${it.isDir ? "文件夹" : "文件"}</td>
+    <td class="num">${fmtSize(it.size)}</td><td>${fmtTime(it.deletedAt)}</td><td>${esc(it.deletedBy)}</td>
+    <td><button data-act="restore">还原</button> <button class="danger" data-act="delete">永久删除</button></td></tr>`).join("");
+  $("trashEmpty").classList.toggle("hidden", items.length > 0);
+  $("emptyTrash").disabled = items.length === 0;
+}
+
+$("trash").onclick = async e => {
+  const btn = e.target.closest("button");
+  if (!btn) return;
+  const id = btn.closest("tr").dataset.id;
+  try {
+    if (btn.dataset.act === "restore") {
+      const r = await api("POST", "/admin/api/trash/restore", { id });
+      alert("已还原到：" + r.path);
+    } else {
+      if (!confirm("永久删除后无法恢复，确定？")) return;
+      await api("DELETE", "/admin/api/trash?id=" + encodeURIComponent(id));
+    }
+  } catch (err) { fail(err); }
+  loadTrash();
+};
+
+$("emptyTrash").onclick = async () => {
+  if (!confirm("清空回收站？所有项目将被永久删除，无法恢复。")) return;
+  try { await api("POST", "/admin/api/trash/empty"); } catch (e) { fail(e); }
+  loadTrash();
+};
+
+// ---------- security ----------
+
+async function loadSecurity() {
+  try { totpEnabled = (await api("GET", "/admin/api/status")).totp; } catch (e) { return; }
+  $("totpOff").classList.toggle("hidden", totpEnabled);
+  $("totpOn").classList.toggle("hidden", !totpEnabled);
+  $("totpSetupBox").classList.add("hidden");
+  $("pwCodeRow").classList.toggle("hidden", !totpEnabled);
+  $("totpError").textContent = "";
+}
+
+$("totpSetup").onclick = async () => {
+  try {
+    const r = await api("POST", "/admin/api/totp/setup");
+    $("qr").innerHTML = r.qrSvg; // generated by the server, no user input
+    $("totpSecret").textContent = r.secret.replace(/(.{4})/g, "$1 ").trim();
+    $("totpSetupBox").classList.remove("hidden");
+    $("totpEnableCode").focus();
+  } catch (e) { $("totpError").textContent = e.message; }
+};
+
+$("totpEnable").onclick = async () => {
+  try {
+    await api("POST", "/admin/api/totp/enable", { code: $("totpEnableCode").value });
+    $("totpEnableCode").value = "";
+    alert("二步认证已启用。");
+    loadSecurity();
+  } catch (e) { $("totpError").textContent = e.message; }
+};
+
+$("totpDisable").onclick = async () => {
+  if (!confirm("停用后登录面板和解锁客户端都不再需要验证码，确定停用？")) return;
+  try {
+    await api("POST", "/admin/api/totp/disable", { code: $("totpDisableCode").value });
+    $("totpDisableCode").value = "";
+    loadSecurity();
+  } catch (e) { $("totpError").textContent = e.message; }
+};
+
+$("pwForm").onsubmit = async e => {
+  e.preventDefault();
+  $("pwError").textContent = "";
+  if ($("pwNew").value !== $("pwNew2").value) { $("pwError").textContent = "两次输入的新密码不一致"; return; }
+  try {
+    await api("POST", "/admin/api/password", { old: $("pwOld").value, new: $("pwNew").value, code: $("pwCode").value });
+    $("pwForm").reset();
+    alert("密码已修改。");
+  } catch (err) { $("pwError").textContent = err.message; }
+};
+
+init();
+</script>
+</body>
+</html>

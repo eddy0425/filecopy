@@ -48,6 +48,11 @@ public partial class SettingsWindow : Window
             MessageBox.Show(this, "请选择本地保留文件夹（完整路径）。", "FileCopy");
             return;
         }
+        if (equipmentId.Length == 0 || equipmentId.Length > 64)
+        {
+            MessageBox.Show(this, "请填写设备 ID（例如 XZT1-DB1，最多 64 个字符），服务器用它区分设备。", "FileCopy");
+            return;
+        }
         // ".7z" is appended to form the archive name, so a trailing dot is fine, but reserved names stay reserved.
         if (equipmentId.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0
             || Regex.IsMatch(equipmentId, @"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$", RegexOptions.IgnoreCase))
