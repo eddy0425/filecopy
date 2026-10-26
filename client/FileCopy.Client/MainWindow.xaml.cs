@@ -32,7 +32,7 @@ public partial class MainWindow : Window
     private int _reloadQueued;
     private bool? _online; // heartbeat result for _sync; null while not connected
     private bool _pinging;
-    private bool _hiddenToTray; // closed to the tray (or started there) since the last unlock
+    private bool _hiddenToTray = true; // started or closed to the tray since the last unlock (not shown yet counts too)
     private DateTime _unlockedAt = DateTime.MinValue;
     private bool _unlocking;
     private readonly System.Windows.Media.Brush _normalStatusBrush; // StatusText's foreground as set in XAML
@@ -48,7 +48,6 @@ public partial class MainWindow : Window
         FilesGrid.ItemsSource = _items;
         TransfersGrid.ItemsSource = _transfers.Items;
         StartMinimized = _settings.AutoConnect && _settings.GetToken().Length > 0;
-        _hiddenToTray = StartMinimized;
         IsVisibleChanged += (_, _) => { if (IsVisible) _hiddenToTray = false; };
         UpdateBreadcrumb();
         Loaded += (_, _) =>
@@ -72,11 +71,11 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// When two-step verification is enabled on the server, asks for a code before the window (or the
-    /// local folder) is shown again after being closed to the tray. Returns false if it stays locked.
+    /// local folder) is shown at startup or again after being closed to the tray. Returns false if it stays locked.
     /// </summary>
     public async Task<bool> UnlockAsync()
     {
-        if (IsVisible || !_settings.ServerTotpEnabled || !_hiddenToTray || DateTime.UtcNow - _unlockedAt < UnlockGrace) return true;
+        if (!LockRequired(IsVisible, _settings.ServerTotpEnabled, _settings.GetToken().Length > 0, _hiddenToTray, _unlockedAt, DateTime.UtcNow)) return true;
         if (_unlocking) return false; // a prompt is already open
         _unlocking = true;
         try
@@ -125,6 +124,14 @@ public partial class MainWindow : Window
             _unlocking = false;
         }
     }
+
+    /// <summary>
+    /// Whether showing the window needs a code: hidden since startup or since being closed to the tray, past the
+    /// grace period. Without a token the code cannot be checked and the server is out of reach anyway: the window
+    /// opens so the token can be entered in the settings.
+    /// </summary>
+    internal static bool LockRequired(bool visible, bool totpEnabled, bool hasToken, bool hiddenToTray, DateTime unlockedAt, DateTime now) =>
+        !visible && totpEnabled && hasToken && hiddenToTray && now - unlockedAt >= UnlockGrace;
 
     /// <summary>App exit: stops transfers and any running backup (7-Zip is killed so no orphan keeps writing).</summary>
     public void Shutdown()
@@ -242,7 +249,7 @@ public partial class MainWindow : Window
         {
             _settings.ServerTotpEnabled = ping.Totp;
             changed = true;
-            Log(ping.Totp ? "服务器已启用二步认证：关闭到托盘后再次打开需要验证码" : "服务器已停用二步认证");
+            Log(ping.Totp ? "服务器已启用二步认证：启动或关闭到托盘后再次打开需要验证码" : "服务器已停用二步认证");
         }
         if (!string.IsNullOrEmpty(ping.EquipmentId) && ping.EquipmentId != _settings.EquipmentId)
         {

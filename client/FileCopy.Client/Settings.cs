@@ -17,7 +17,7 @@ public sealed class Settings
     public string EquipmentId { get; set; } = "";
     /// <summary>
     /// The server had two-step verification enabled at the last ping: the window then asks for a code
-    /// after being closed to the tray. Remembered so the lock also applies when starting offline.
+    /// at startup and after being closed to the tray. Remembered so the lock also applies when starting offline.
     /// </summary>
     public bool ServerTotpEnabled { get; set; }
     /// <summary>Token encrypted with DPAPI (current user), base64.</summary>

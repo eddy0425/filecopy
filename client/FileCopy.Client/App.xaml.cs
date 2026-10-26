@@ -40,10 +40,10 @@ public partial class App : Application
         _tray.DoubleClick += (_, _) => ShowWindow();
 
         if (_window.StartMinimized) _window.Hide();
-        else _window.Show();
+        else ShowWindow(); // locked like reopening from the tray, so restarting cannot skip the code
     }
 
-    // Locked after being closed to the tray when two-step verification is enabled on the server.
+    // Locked at startup and after being closed to the tray when two-step verification is enabled on the server.
     private async void ShowWindow()
     {
         if (!await _window!.UnlockAsync()) return;
