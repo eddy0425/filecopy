@@ -189,7 +189,7 @@ dotnet build -c Release
 |---|---|
 | 设置（Token 用 DPAPI 加密） | `%AppData%\FileCopy\settings.json` |
 | 保留状态 | `%AppData%\FileCopy\state-*.json` |
-| 日志 | `%AppData%\FileCopy\log.txt` |
+| 日志 | `%AppData%\FileCopy\log.txt`（超过 5 MB 时转存为 `log.1.txt`） |
 | 本地保留文件夹（默认） | `文档\FileCopy\data` |
 | 备份包（默认） | `文档\FileCopy\data\backup\<设备 ID>.7z` |
 | 程序 | `文档\FileCopy\app` |

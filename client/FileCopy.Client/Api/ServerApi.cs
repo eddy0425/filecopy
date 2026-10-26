@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.IO;
 using System.Net;
 using System.Net.Http;
@@ -25,6 +26,7 @@ public sealed record PingResult(
 /// HTTP client for the FileCopy server. Large transfers are split into chunks
 /// sent over several parallel connections, which matters a lot on high-latency
 /// overseas links where a single TCP stream cannot fill the pipe.
+/// Awaits use ConfigureAwait(false): transfer loops must not queue behind the UI thread.
 /// </summary>
 public sealed class ServerApi : IDisposable
 {
@@ -46,7 +48,7 @@ public sealed class ServerApi : IDisposable
             MaxConnectionsPerServer = 32,
             PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
             ConnectTimeout = TimeSpan.FromSeconds(10),
-            AutomaticDecompression = DecompressionMethods.None,
+            AutomaticDecompression = DecompressionMethods.GZip, // the server gzips /api/tree; files are never compressed
         };
         _http = new HttpClient(new EquipmentIdHandler(this, handler))
         {
@@ -101,11 +103,11 @@ public sealed class ServerApi : IDisposable
     public async Task<PingResult> PingAsync(CancellationToken ct = default)
     {
         using var cts = WithTimeout(ct, 15);
-        using var resp = await _http.GetAsync("api/ping", cts.Token);
+        using var resp = await _http.GetAsync("api/ping", cts.Token).ConfigureAwait(false);
         if (resp.StatusCode == HttpStatusCode.BadRequest)
             throw new InvalidOperationException("服务器要求填写设备 ID，请在设置中填写");
         EnsureOk(resp);
-        return await resp.Content.ReadFromJsonAsync<PingResult>(cts.Token)
+        return await resp.Content.ReadFromJsonAsync<PingResult>(cts.Token).ConfigureAwait(false)
                ?? throw new InvalidDataException("bad ping response");
     }
 
@@ -113,7 +115,7 @@ public sealed class ServerApi : IDisposable
     public async Task<bool> VerifyTotpAsync(string code, CancellationToken ct = default)
     {
         using var cts = WithTimeout(ct, 15);
-        using var resp = await _http.PostAsJsonAsync("api/totp/verify", new { code }, cts.Token);
+        using var resp = await _http.PostAsJsonAsync("api/totp/verify", new { code }, cts.Token).ConfigureAwait(false);
         if (resp.StatusCode == HttpStatusCode.Forbidden) return false;
         if (resp.StatusCode == HttpStatusCode.Conflict) throw new TotpCodeUsedException();
         if (resp.StatusCode == HttpStatusCode.TooManyRequests)
@@ -125,13 +127,13 @@ public sealed class ServerApi : IDisposable
     public async Task<List<RemoteEntry>> GetTreeAsync(CancellationToken ct = default)
     {
         using var cts = WithTimeout(ct, 120);
-        return await _http.GetFromJsonAsync<List<RemoteEntry>>("api/tree", cts.Token) ?? [];
+        return await _http.GetFromJsonAsync<List<RemoteEntry>>("api/tree", cts.Token).ConfigureAwait(false) ?? [];
     }
 
     public async Task DeleteAsync(string path, CancellationToken ct = default)
     {
         using var cts = WithTimeout(ct);
-        using var resp = await _http.DeleteAsync($"api/file?path={Q(path)}", cts.Token);
+        using var resp = await _http.DeleteAsync($"api/file?path={Q(path)}", cts.Token).ConfigureAwait(false);
         if (resp.StatusCode != HttpStatusCode.NotFound)
             EnsureOk(resp);
     }
@@ -139,7 +141,7 @@ public sealed class ServerApi : IDisposable
     public async Task MoveAsync(string from, string to, CancellationToken ct = default)
     {
         using var cts = WithTimeout(ct);
-        using var resp = await _http.PostAsJsonAsync("api/move", new { from, to }, cts.Token);
+        using var resp = await _http.PostAsJsonAsync("api/move", new { from, to }, cts.Token).ConfigureAwait(false);
         // The server refuses to replace an existing item (e.g. created by another device since the last refresh).
         if (resp.StatusCode == HttpStatusCode.Conflict)
             throw new IOException($"已存在同名项: {Path.GetFileName(to)}");
@@ -149,15 +151,15 @@ public sealed class ServerApi : IDisposable
     public async Task MkdirAsync(string path, CancellationToken ct = default)
     {
         using var cts = WithTimeout(ct);
-        using var resp = await _http.PostAsJsonAsync("api/mkdir", new { path }, cts.Token);
+        using var resp = await _http.PostAsJsonAsync("api/mkdir", new { path }, cts.Token).ConfigureAwait(false);
         EnsureOk(resp);
     }
 
     /// <summary>
-    /// Downloads [offset, offset+length) of a file into a new buffer, with retries.
+    /// Downloads [offset, offset+dest.Length) of a file into <paramref name="dest"/>, with retries.
     /// <paramref name="onRetry"/> gets the failed attempt number and its error before each retry.
     /// </summary>
-    public async Task<byte[]> DownloadRangeAsync(string path, long offset, int length, CancellationToken ct,
+    public async Task DownloadRangeAsync(string path, long offset, Memory<byte> dest, CancellationToken ct,
         Action<int, Exception>? onRetry = null)
     {
         for (int attempt = 1; ; attempt++)
@@ -167,38 +169,38 @@ public sealed class ServerApi : IDisposable
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 cts.CancelAfter(StallTimeout);
                 using var req = new HttpRequestMessage(HttpMethod.Get, $"api/file?path={Q(path)}");
-                req.Headers.Range = new RangeHeaderValue(offset, offset + length - 1);
-                using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+                req.Headers.Range = new RangeHeaderValue(offset, offset + dest.Length - 1);
+                using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token).ConfigureAwait(false);
                 // Not EnsureOk: reading is never refused for a read-only folder, so a 403 is not that.
                 if (resp.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.ServiceUnavailable) EnsureOk(resp);
                 resp.EnsureSuccessStatusCode();
-                var buf = new byte[length];
-                await using var s = await resp.Content.ReadAsStreamAsync(cts.Token);
-                for (int read = 0; read < length;)
+                await using var s = await resp.Content.ReadAsStreamAsync(cts.Token).ConfigureAwait(false);
+                for (int read = 0; read < dest.Length;)
                 {
-                    int n = await s.ReadAsync(buf.AsMemory(read), cts.Token);
+                    int n = await s.ReadAsync(dest[read..], cts.Token).ConfigureAwait(false);
                     if (n == 0) throw new EndOfStreamException("服务器提前关闭了连接");
                     read += n;
                     cts.CancelAfter(StallTimeout); // data is flowing: restart the stall timer
                 }
-                return buf;
+                return;
             }
             catch (Exception ex) when (attempt < MaxRetries && !ct.IsCancellationRequested && !IsFatal(ex))
             {
                 onRetry?.Invoke(attempt, ex);
-                await Task.Delay(TimeSpan.FromSeconds(attempt * 2), ct);
+                await Task.Delay(TimeSpan.FromSeconds(attempt * 2), ct).ConfigureAwait(false);
             }
         }
     }
 
     /// <summary>
     /// Downloads a byte range as ordered chunks fetched over parallel connections.
-    /// <paramref name="onChunk"/> is invoked sequentially, in file order.
+    /// <paramref name="onChunk"/> is invoked sequentially, in file order. The chunk buffers are pooled:
+    /// the data is only valid until the task returned by <paramref name="onChunk"/> completes.
     /// </summary>
     public async Task DownloadChunkedAsync(string path, long offset, long length,
-        Func<long, byte[], Task> onChunk, CancellationToken ct, Action<int, Exception>? onRetry = null)
+        Func<long, ReadOnlyMemory<byte>, Task> onChunk, CancellationToken ct, Action<int, Exception>? onRetry = null)
     {
-        var pending = new Queue<(long Offset, Task<byte[]> Data)>();
+        var pending = new Queue<(long Offset, int Length, byte[] Buffer, Task Download)>();
         long next = offset, end = offset + length;
         // Cancelled on exit so chunks abandoned after a failure stop (and stop retrying) right away.
         using var chunksCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -206,7 +208,8 @@ public sealed class ServerApi : IDisposable
         void StartNext()
         {
             int len = (int)Math.Min(ChunkSize, end - next);
-            pending.Enqueue((next, DownloadRangeAsync(path, next, len, chunksCts.Token, onRetry)));
+            var buf = ArrayPool<byte>.Shared.Rent(len);
+            pending.Enqueue((next, len, buf, DownloadRangeAsync(path, next, buf.AsMemory(0, len), chunksCts.Token, onRetry)));
             next += len;
         }
 
@@ -215,17 +218,21 @@ public sealed class ServerApi : IDisposable
             while (pending.Count < Parallelism && next < end) StartNext();
             while (pending.Count > 0)
             {
-                var (off, task) = pending.Dequeue();
-                var data = await task;
+                var (off, len, buf, task) = pending.Peek();
+                await task.ConfigureAwait(false); // on failure the chunk stays queued, so finally returns its buffer
+                pending.Dequeue();
                 if (next < end) StartNext();
-                await onChunk(off, data);
+                try { await onChunk(off, buf.AsMemory(0, len)).ConfigureAwait(false); }
+                finally { ArrayPool<byte>.Shared.Return(buf); }
             }
         }
         finally
         {
             chunksCts.Cancel();
-            // Observe abandoned tasks so failures don't surface as unobserved exceptions.
-            foreach (var (_, t) in pending) _ = t.ContinueWith(x => _ = x.Exception, TaskScheduler.Default);
+            // Abandoned chunks: return each buffer once its download stopped writing into it, and observe
+            // failures so they don't surface as unobserved exceptions.
+            foreach (var (_, _, buf, t) in pending)
+                _ = t.ContinueWith(x => { _ = x.Exception; ArrayPool<byte>.Shared.Return(buf); }, TaskScheduler.Default);
         }
     }
 
@@ -248,9 +255,9 @@ public sealed class ServerApi : IDisposable
                 await DownloadChunkedAsync(entry.Path, 0, entry.Size, async (off, data) =>
                 {
                     fs.Position = off;
-                    await fs.WriteAsync(data, ct);
+                    await fs.WriteAsync(data, ct).ConfigureAwait(false);
                     progress?.Report(done += data.Length);
-                }, ct, onRetry);
+                }, ct, onRetry).ConfigureAwait(false);
             }
             File.SetLastWriteTimeUtc(part, DateTimeOffset.FromUnixTimeMilliseconds(entry.Mtime).UtcDateTime);
             if (canReplace?.Invoke() == false)
@@ -275,10 +282,10 @@ public sealed class ServerApi : IDisposable
         string id;
         int chunkSize;
         using (var cts = WithTimeout(ct))
-        using (var resp = await _http.PostAsJsonAsync("api/upload/init", new { path = remotePath, size, mtime }, cts.Token))
+        using (var resp = await _http.PostAsJsonAsync("api/upload/init", new { path = remotePath, size, mtime }, cts.Token).ConfigureAwait(false))
         {
             EnsureOk(resp);
-            var init = await resp.Content.ReadFromJsonAsync<InitResponse>(cts.Token)
+            var init = await resp.Content.ReadFromJsonAsync<InitResponse>(cts.Token).ConfigureAwait(false)
                        ?? throw new InvalidDataException("bad init response");
             id = init.Id;
             chunkSize = init.ChunkSize > 0 ? init.ChunkSize : ChunkSize;
@@ -301,40 +308,47 @@ public sealed class ServerApi : IDisposable
             async (off, token) =>
             {
                 int len = (int)Math.Min(chunkSize, size - off);
-                var buf = new byte[len];
-                await using (var fs = new FileStream(localPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, true))
+                var buf = ArrayPool<byte>.Shared.Rent(len);
+                try
                 {
-                    fs.Position = off;
-                    await fs.ReadExactlyAsync(buf, token);
+                    await using (var fs = new FileStream(localPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, true))
+                    {
+                        fs.Position = off;
+                        await fs.ReadExactlyAsync(buf.AsMemory(0, len), token).ConfigureAwait(false);
+                    }
+                    ThrowIfChanged(); // fail early instead of after the whole file has been sent
+                    for (int attempt = 1; ; attempt++)
+                    {
+                        try
+                        {
+                            using var cts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                            cts.CancelAfter(StallTimeout);
+                            using var content = new StallResetContent(buf.AsMemory(0, len), cts);
+                            using var resp = await _http.PutAsync($"api/upload/{id}?offset={off}", content, cts.Token).ConfigureAwait(false);
+                            resp.EnsureSuccessStatusCode();
+                            break;
+                        }
+                        catch (Exception ex) when (attempt < MaxRetries && !token.IsCancellationRequested && !IsFatal(ex))
+                        {
+                            onRetry?.Invoke(attempt, ex);
+                            await Task.Delay(TimeSpan.FromSeconds(attempt * 2), token).ConfigureAwait(false);
+                        }
+                    }
                 }
-                ThrowIfChanged(); // fail early instead of after the whole file has been sent
-                for (int attempt = 1; ; attempt++)
+                finally
                 {
-                    try
-                    {
-                        using var cts = CancellationTokenSource.CreateLinkedTokenSource(token);
-                        cts.CancelAfter(StallTimeout);
-                        using var content = new StallResetContent(buf, cts);
-                        using var resp = await _http.PutAsync($"api/upload/{id}?offset={off}", content, cts.Token);
-                        resp.EnsureSuccessStatusCode();
-                        break;
-                    }
-                    catch (Exception ex) when (attempt < MaxRetries && !token.IsCancellationRequested && !IsFatal(ex))
-                    {
-                        onRetry?.Invoke(attempt, ex);
-                        await Task.Delay(TimeSpan.FromSeconds(attempt * 2), token);
-                    }
+                    ArrayPool<byte>.Shared.Return(buf); // each PUT has completed or failed: nothing reads it any more
                 }
                 progress?.Report(Interlocked.Add(ref done, len));
-            });
+            }).ConfigureAwait(false);
 
         ThrowIfChanged(); // covers a change after the last chunk was read
 
         using (var cts = WithTimeout(ct))
-        using (var resp = await _http.PostAsJsonAsync($"api/upload/{id}/complete", new { baseMtime }, cts.Token))
+        using (var resp = await _http.PostAsJsonAsync($"api/upload/{id}/complete", new { baseMtime }, cts.Token).ConfigureAwait(false))
         {
             EnsureOk(resp);
-            return await resp.Content.ReadFromJsonAsync<RemoteEntry>(cts.Token)
+            return await resp.Content.ReadFromJsonAsync<RemoteEntry>(cts.Token).ConfigureAwait(false)
                    ?? throw new InvalidDataException("bad complete response");
         }
     }
@@ -344,7 +358,7 @@ public sealed class ServerApi : IDisposable
         [property: JsonPropertyName("chunkSize")] int ChunkSize);
 
     /// <summary>Request body that restarts the stall timer each time a block is handed to the connection.</summary>
-    private sealed class StallResetContent(byte[] buf, CancellationTokenSource stall) : HttpContent
+    private sealed class StallResetContent(ReadOnlyMemory<byte> buf, CancellationTokenSource stall) : HttpContent
     {
         private const int Block = 64 << 10;
 
@@ -352,7 +366,7 @@ public sealed class ServerApi : IDisposable
         {
             for (int off = 0; off < buf.Length; off += Block)
             {
-                await stream.WriteAsync(buf.AsMemory(off, Math.Min(Block, buf.Length - off)), ct);
+                await stream.WriteAsync(buf.Slice(off, Math.Min(Block, buf.Length - off)), ct).ConfigureAwait(false);
                 stall.CancelAfter(StallTimeout); // data is flowing: restart the stall timer
             }
         }

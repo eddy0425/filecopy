@@ -97,7 +97,7 @@ public sealed class ServerApiTests : IDisposable
         using var api = new ServerApi(server.Url, TestServer.Token, TestServer.EquipmentId);
         var retries = 0;
         await Assert.ThrowsAsync<ServerPausedException>(() =>
-            api.DownloadRangeAsync("a.bin", 0, 4, default, (_, _) => retries++).T());
+            api.DownloadRangeAsync("a.bin", 0, new byte[4], default, (_, _) => retries++).T());
         Assert.Equal(0, retries);
         await Assert.ThrowsAsync<ServerPausedException>(() => api.UploadAsync(LocalFile("p.bin", 10), "p.bin", 0, null, default).T());
     }
@@ -187,7 +187,8 @@ public sealed class ServerApiTests : IDisposable
     public async Task DownloadRange_ReturnsRequestedBytes()
     {
         _server.Put("r.txt", "0123456789");
-        var buf = await _api.DownloadRangeAsync("r.txt", 3, 4, default);
+        var buf = new byte[4];
+        await _api.DownloadRangeAsync("r.txt", 3, buf, default);
         Assert.Equal("3456", System.Text.Encoding.ASCII.GetString(buf));
     }
 
@@ -200,7 +201,7 @@ public sealed class ServerApiTests : IDisposable
         using var api = new ServerApi($"http://127.0.0.1:{((IPEndPoint)reserved.LocalEndPoint!).Port}/", TestServer.Token, TestServer.EquipmentId);
         var attempts = new List<int>();
         await Assert.ThrowsAsync<HttpRequestException>(() =>
-            api.DownloadRangeAsync("r.txt", 0, 4, default, (a, _) => attempts.Add(a)).T(60));
+            api.DownloadRangeAsync("r.txt", 0, new byte[4], default, (a, _) => attempts.Add(a)).T(60));
         Assert.Equal(Enumerable.Range(1, ServerApi.MaxRetries - 1), attempts);
     }
 

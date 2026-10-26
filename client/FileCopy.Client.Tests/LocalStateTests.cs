@@ -32,7 +32,7 @@ public class LocalStateTests
         var s = LocalState.Load("http://unit.test/", folder);
         s.AddKeptFolder("Docs");
         s.SetFile("Docs/A.txt", new FileSnapshot { ServerMtime = 5, Size = 6, LocalMtime = 7, Pinned = false });
-        s.Save();
+        s.Flush();
 
         // Trailing slash / case differences in the key inputs map to the same state file.
         var t = LocalState.Load("HTTP://unit.test", folder + "\\");
@@ -40,6 +40,36 @@ public class LocalStateTests
         var snap = t.GetFile("docs/a.TXT");
         Assert.NotNull(snap);
         Assert.Equal((5L, 6L, 7L, false), (snap!.ServerMtime, snap.Size, snap.LocalMtime, snap.Pinned));
+    }
+
+    [Fact]
+    public async Task Save_WritesInTheBackground()
+    {
+        var folder = TestEnv.NewDir("state");
+        var s = LocalState.Load("http://later.test", folder);
+        for (int i = 0; i < 100; i++)
+        {
+            s.SetFile($"f{i}", Snap());
+            s.Save(); // a burst, as when keeping a large folder
+        }
+
+        for (var deadline = DateTime.UtcNow.AddSeconds(10); LocalState.Load("http://later.test", folder).GetFile("f99") == null;)
+        {
+            Assert.True(DateTime.UtcNow < deadline, "state was not saved in the background");
+            await Task.Delay(50);
+        }
+        Assert.Equal(100, LocalState.Load("http://later.test", folder).FileKeys().Count);
+    }
+
+    [Fact]
+    public void Flush_WritesPendingChangesNow()
+    {
+        var folder = TestEnv.NewDir("state");
+        var s = LocalState.Load("http://now.test", folder);
+        s.SetFile("a", Snap());
+        s.Save();
+        s.Flush();
+        Assert.NotNull(LocalState.Load("http://now.test", folder).GetFile("a"));
     }
 
     [Theory]
@@ -51,7 +81,7 @@ public class LocalStateTests
         var folder = TestEnv.NewDir("state");
         var s = LocalState.Load("http://corrupt.test", folder);
         s.SetFile("x", Snap());
-        s.Save();
+        s.Flush();
         var file = (string)typeof(LocalState).GetField("_path", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(s)!;
         File.WriteAllText(file, content);
 
@@ -66,7 +96,7 @@ public class LocalStateTests
     {
         var folder = TestEnv.NewDir("state");
         var s = LocalState.Load("http://dup.test", folder);
-        s.Save();
+        s.Flush();
         var file = (string)typeof(LocalState).GetField("_path", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(s)!;
         File.WriteAllText(file, """{"KeptFolders":["a",null],"Files":{"x":{"Size":1},"X":{"Size":2},"y":null}}""");
 
