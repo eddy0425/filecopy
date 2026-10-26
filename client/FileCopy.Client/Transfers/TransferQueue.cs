@@ -46,6 +46,8 @@ public sealed class TransferItem : INotifyPropertyChanged
         }
     }
     public string Status { get => _status; private set { _status = value; OnChanged(); } }
+    /// <summary>Completed or failed.</summary>
+    public bool IsFinished => _finished;
 
     public void Report(long done)
     {
@@ -140,5 +142,12 @@ public sealed class TransferQueue
             while (Items.Count > MaxItems) Items.RemoveAt(Items.Count - 1);
         });
         return item;
+    }
+
+    /// <summary>Removes completed and failed transfers; running ones stay. Call on the UI thread.</summary>
+    public void ClearFinished()
+    {
+        for (int i = Items.Count - 1; i >= 0; i--)
+            if (Items[i].IsFinished) Items.RemoveAt(i);
     }
 }

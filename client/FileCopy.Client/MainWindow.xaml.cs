@@ -605,6 +605,19 @@ public partial class MainWindow : Window
 
     private void Settings_Click(object sender, RoutedEventArgs e) => OpenSettings();
 
+    // ---------- transfers / log ----------
+
+    private void ClearTab_Click(object sender, RoutedEventArgs e)
+    {
+        if (BottomTabs.SelectedIndex == 0) _transfers.ClearFinished();
+        else LogList.Items.Clear();
+    }
+
+    private void ClearTransfers_Click(object sender, RoutedEventArgs e) => _transfers.ClearFinished();
+
+    // Only the list: log.txt is kept for troubleshooting.
+    private void ClearLog_Click(object sender, RoutedEventArgs e) => LogList.Items.Clear();
+
     private async void Backup_Click(object sender, RoutedEventArgs e)
     {
         var id = _settings.EquipmentId;

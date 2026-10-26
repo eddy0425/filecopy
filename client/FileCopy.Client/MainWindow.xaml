@@ -158,11 +158,16 @@
         <GridSplitter Grid.Row="3" HorizontalAlignment="Stretch" Background="Transparent" />
 
         <!-- Transfers / log -->
-        <TabControl Grid.Row="4" Margin="10,0,10,4">
+        <TabControl x:Name="BottomTabs" Grid.Row="4" Margin="10,0,10,4">
             <TabItem Header="传输">
                 <DataGrid x:Name="TransfersGrid" AutoGenerateColumns="False" IsReadOnly="True"
                           HeadersVisibility="Column" GridLinesVisibility="None" CanUserAddRows="False"
                           RowHeight="22" BorderThickness="0" Background="White">
+                    <DataGrid.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Header="清除已完成" Click="ClearTransfers_Click" />
+                        </ContextMenu>
+                    </DataGrid.ContextMenu>
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="方向" Binding="{Binding DirectionText}" Width="70" />
                         <DataGridTextColumn Header="文件" Binding="{Binding Path}" Width="*" />
@@ -180,9 +185,19 @@
                 </DataGrid>
             </TabItem>
             <TabItem Header="日志">
-                <ListBox x:Name="LogList" BorderThickness="0" FontFamily="Consolas, Microsoft YaHei UI" FontSize="12" />
+                <ListBox x:Name="LogList" BorderThickness="0" FontFamily="Consolas, Microsoft YaHei UI" FontSize="12">
+                    <ListBox.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Header="清空日志" Click="ClearLog_Click" />
+                        </ContextMenu>
+                    </ListBox.ContextMenu>
+                </ListBox>
             </TabItem>
         </TabControl>
+        <!-- Over the tab strip (declared after the TabControl, so drawn on top); acts on the selected tab. -->
+        <Button Grid.Row="4" Content="🗑 清空" Click="ClearTab_Click" HorizontalAlignment="Right" VerticalAlignment="Top"
+                Margin="0,0,10,0" Padding="8,0" Height="22" FontSize="12" Background="White" BorderBrush="#D0D7DE"
+                ToolTip="传输：清除已完成和失败的传输（进行中的保留）；日志：清空列表（log.txt 保留）" />
 
         <!-- Status bar -->
         <Border Grid.Row="5" Background="#F0F2F5" BorderBrush="#D0D7DE" BorderThickness="0,1,0,0" Padding="10,4">
