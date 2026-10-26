@@ -161,6 +161,19 @@ public class LocalStateTests
         Assert.Equal(["ab"], s.FileKeys());
         Assert.False(s.IsInKeptFolder("a"));
     }
+
+    [Fact]
+    public void RemoveTree_WithoutFiles_KeepsSnapshots()
+    {
+        // A deleted folder whose local copy could not be recycled: its files must still look synced,
+        // or the next refresh would upload them again as new files.
+        var s = NewState();
+        s.AddKeptFolder("a");
+        s.SetFile("a/x", Snap());
+        s.RemoveTree("a", includeFiles: false);
+        Assert.Equal(["a/x"], s.FileKeys());
+        Assert.False(s.IsInKeptFolder("a/x"));
+    }
 }
 
 public class TransferItemTests

@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -540,12 +541,7 @@ public partial class MainWindow : Window
         var item = Targets(sender).FirstOrDefault();
         if (item == null) return;
         var name = InputDialog.Show(this, "重命名", "新名称：", item.Name);
-        if (name == null || name == item.Name) return;
-        if (name.IndexOfAny(['/', '\\', ':', '*', '?', '"', '<', '>', '|']) >= 0)
-        {
-            MessageBox.Show(this, "名称不能包含 / \\ : * ? \" < > |", "FileCopy");
-            return;
-        }
+        if (name == null || name == item.Name || !CheckName(name)) return;
         await Run(s => s.RenameAsync(item.Rel, name, item.IsDir));
     }
 
@@ -563,7 +559,29 @@ public partial class MainWindow : Window
     private async void NewFolder_Click(object sender, RoutedEventArgs e)
     {
         var name = InputDialog.Show(this, "新建文件夹", "文件夹名称：", "新建文件夹");
-        if (name != null) await Run(s => s.MkdirAsync(JoinRel(_folder, name)));
+        if (name != null && CheckName(name)) await Run(s => s.MkdirAsync(JoinRel(_folder, name)));
+    }
+
+    private bool CheckName(string name)
+    {
+        if (NameError(name) is not { } error) return true;
+        MessageBox.Show(this, error, "FileCopy");
+        return false;
+    }
+
+    /// <summary>
+    /// Why <paramref name="name"/> cannot name a new file or folder, or null. Kept copies live in a Windows
+    /// folder, so Windows' rules apply; "a/b" or ".." would also address a different place on the server.
+    /// </summary>
+    internal static string? NameError(string name)
+    {
+        if (name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            return "名称不能包含 / \\ : * ? \" < > | 等字符。";
+        if (name.EndsWith('.') || name.EndsWith(' '))
+            return "名称不能以句点或空格结尾。";
+        if (Regex.IsMatch(name, @"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$", RegexOptions.IgnoreCase))
+            return "名称不能是 CON、NUL 等系统保留名。";
+        return null;
     }
 
     private async void UploadFiles_Click(object sender, RoutedEventArgs e)

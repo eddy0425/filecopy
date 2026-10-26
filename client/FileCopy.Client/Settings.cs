@@ -58,9 +58,12 @@ public sealed class Settings
         return new Settings();
     }
 
+    /// <summary>Written to a temp file first: a write cut short (crash, power loss) must not lose the settings.</summary>
     public void Save()
     {
         Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-        File.WriteAllText(FilePath, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
+        var tmp = FilePath + ".tmp";
+        File.WriteAllText(tmp, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
+        File.Move(tmp, FilePath, overwrite: true);
     }
 }

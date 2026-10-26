@@ -169,12 +169,16 @@ public sealed class LocalState
         }
     }
 
-    /// <summary>Removes all records at or under <paramref name="rel"/>.</summary>
-    public void RemoveTree(string rel)
+    /// <summary>
+    /// Removes all records at or under <paramref name="rel"/>.
+    /// Without <paramref name="includeFiles"/> only kept folders go; file snapshots stay.
+    /// </summary>
+    public void RemoveTree(string rel, bool includeFiles = true)
     {
         lock (_lock)
         {
             KeptFolders.RemoveWhere(k => IsSameOrUnder(k, rel));
+            if (!includeFiles) return;
             foreach (var k in Files.Keys.Where(k => IsSameOrUnder(k, rel)).ToList()) Files.Remove(k);
         }
     }

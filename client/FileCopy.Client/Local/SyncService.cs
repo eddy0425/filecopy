@@ -847,6 +847,7 @@ public sealed class SyncService : IDisposable
                 ThrowIf(TouchesReadOnly(rel));
                 await _api.DeleteAsync(rel, _cts.Token);
                 var full = LocalPath(rel);
+                var deletedLocally = true;
                 try
                 {
                     if (isDir && Directory.Exists(full))
@@ -856,9 +857,12 @@ public sealed class SyncService : IDisposable
                 }
                 catch (Exception ex)
                 {
-                    _log($"删除本地副本失败: {ex.Message}");
+                    deletedLocally = false;
+                    _log($"删除本地副本失败（下次刷新时会重试）: {ex.Message}");
                 }
-                State.RemoveTree(rel);
+                // A copy left behind (e.g. open in another program) keeps its snapshots: the next refresh then
+                // sees it as deleted on the server and recycles it, instead of uploading it again as a new file.
+                State.RemoveTree(rel, includeFiles: deletedLocally);
                 _log($"已删除: {rel}");
             }
         }

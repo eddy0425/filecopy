@@ -19,6 +19,23 @@ public class MainWindowTests
     public void LockRequired_NotNeeded(bool visible, bool totpEnabled, bool hasToken, bool hiddenToTray) =>
         Assert.False(MainWindow.LockRequired(visible, totpEnabled, hasToken, hiddenToTray, DateTime.MinValue, Now));
 
+    [Theory]
+    [InlineData("报告.docx", true)]
+    [InlineData("新建文件夹", true)]
+    [InlineData(".gitignore", true)]
+    [InlineData("CONSOLE", true)]
+    [InlineData("a/b", false)]   // regression: new folders were not checked, "a/b" created two levels
+    [InlineData("../x", false)]  // regression: would be created in the parent folder
+    [InlineData("..", false)]
+    [InlineData(".", false)]
+    [InlineData("a:b", false)]
+    [InlineData("a\tb", false)]
+    [InlineData("name.", false)] // Windows drops the dot: the local copy would get another name
+    [InlineData("CON", false)]
+    [InlineData("nul.txt", false)]
+    public void NameError(string name, bool valid) =>
+        Assert.Equal(valid, MainWindow.NameError(name) == null);
+
     [Fact]
     public void LockRequired_GracePeriodAfterUnlock()
     {
