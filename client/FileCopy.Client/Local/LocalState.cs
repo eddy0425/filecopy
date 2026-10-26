@@ -44,9 +44,13 @@ public sealed class LocalState
             // Corrupt state: start fresh; files are re-adopted on the next refresh.
         }
         state ??= new LocalState();
-        // Deserialization loses the comparer; restore case-insensitive lookups.
-        state.KeptFolders = new HashSet<string>(state.KeptFolders, StringComparer.OrdinalIgnoreCase);
-        state.Files = new Dictionary<string, FileSnapshot>(state.Files, StringComparer.OrdinalIgnoreCase);
+        // Deserialization loses the comparer; restore case-insensitive lookups. A corrupt file may hold
+        // nulls or keys that differ only in case (first one wins).
+        var files = state.Files ?? [];
+        state.KeptFolders = new HashSet<string>((state.KeptFolders ?? []).Where(k => k != null), StringComparer.OrdinalIgnoreCase);
+        state.Files = new Dictionary<string, FileSnapshot>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (k, v) in files)
+            if (v != null) state.Files.TryAdd(k, v);
         state._path = path;
         return state;
     }
@@ -138,8 +142,11 @@ public sealed class LocalState
         }
     }
 
-    /// <summary>Re-keys all records at or under <paramref name="from"/> to <paramref name="to"/>.</summary>
-    public void MoveTree(string from, string to)
+    /// <summary>
+    /// Re-keys all records at or under <paramref name="from"/> to <paramref name="to"/>.
+    /// Without <paramref name="includeFiles"/> only kept folders move; file snapshots stay put.
+    /// </summary>
+    public void MoveTree(string from, string to, bool includeFiles = true)
     {
         lock (_lock)
         {
@@ -148,6 +155,7 @@ public sealed class LocalState
                 KeptFolders.Remove(k);
                 KeptFolders.Add(to + k[from.Length..]);
             }
+            if (!includeFiles) return;
             foreach (var (k, v) in Files.Where(f => IsSameOrUnder(f.Key, from)).ToList())
             {
                 Files.Remove(k);

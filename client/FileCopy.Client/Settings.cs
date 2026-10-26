@@ -7,8 +7,8 @@ namespace FileCopy.Client;
 
 public sealed class Settings
 {
-    /// <summary>%AppData%\FileCopy: settings.json, state-*.json and log.txt (kept out of Documents, which OneDrive may sync).</summary>
-    public static readonly string DataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FileCopy");
+    /// <summary>%AppData%\FileCopy: settings.json, state-*.json and log.txt (kept out of Documents, which OneDrive may sync). Settable so tests can redirect it.</summary>
+    public static string DataDir { get; internal set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FileCopy");
 
     public string ServerUrl { get; set; } = "http://";
     public string LocalFolder { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "FileCopy", "data");
@@ -18,7 +18,7 @@ public sealed class Settings
     /// <summary>Token encrypted with DPAPI (current user), base64.</summary>
     public string ProtectedToken { get; set; } = "";
 
-    private static readonly string FilePath = Path.Combine(DataDir, "settings.json");
+    private static string FilePath => Path.Combine(DataDir, "settings.json");
 
     public string GetToken()
     {

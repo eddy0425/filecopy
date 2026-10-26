@@ -193,6 +193,18 @@ func TestMoveDeleteMkdir(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("move %d", resp.StatusCode)
 	}
+	upload(t, ts, "c.txt", []byte("keep"), 10, 0)
+	resp = do(t, ts, "POST", "/api/move", strings.NewReader(`{"from":"d/b.txt","to":"c.txt"}`))
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("move onto existing %d", resp.StatusCode)
+	}
+	if b, _ := os.ReadFile(filepath.Join(s.root, "c.txt")); string(b) != "keep" {
+		t.Fatalf("c.txt overwritten: %q", b)
+	}
+	resp = do(t, ts, "POST", "/api/move", strings.NewReader(`{"from":"missing.txt","to":"c.txt"}`))
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("move missing source %d", resp.StatusCode)
+	}
 	resp = do(t, ts, "POST", "/api/mkdir", strings.NewReader(`{"path":"e/f"}`))
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("mkdir %d", resp.StatusCode)

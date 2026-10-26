@@ -40,6 +40,7 @@ client/FileCopy.Client/ WPF 客户端（.NET 9）
   Local/SyncService.cs  同步逻辑：刷新对比、保留、释放空间、上传下载
   Local/LocalState.cs   本机保留状态记录
   MainWindow.xaml       主界面
+client/FileCopy.Client.Tests/ 客户端测试（xUnit，集成测试会自动编译并启动真实服务端）
 ```
 
 ## 服务端部署（Linux）
@@ -147,7 +148,7 @@ dotnet build -c Release
 | GET | `/api/tree` | 递归列出全部条目 `[{path, isDir, size, mtime}]`，`mtime` 为 Unix 毫秒 |
 | GET | `/api/file?path=` | 下载，支持 `Range`（断点续传、多连接分块） |
 | DELETE | `/api/file?path=` | 删除文件或文件夹 |
-| POST | `/api/move` | `{from, to}` 重命名 / 移动 |
+| POST | `/api/move` | `{from, to}` 重命名 / 移动；目标已存在时返回 409（仅大小写不同的同一项除外） |
 | POST | `/api/mkdir` | `{path}` 新建文件夹 |
 | POST | `/api/upload/init` | `{path, size, mtime}` → `{id, chunkSize}`，开始分块上传 |
 | PUT | `/api/upload/{id}?offset=N` | 上传一个分块，可并行、乱序、重试 |
@@ -160,6 +161,13 @@ dotnet build -c Release
 ```bash
 cd server
 go test ./...
+```
+
+客户端测试（需要 Go，测试会编译服务端并在随机端口启动；删除类测试会把临时文件移到回收站）：
+
+```bash
+cd client
+dotnet test FileCopy.Client.Tests
 ```
 
 本地联调：用一个本地配置启动服务端，再把客户端的服务器地址设为 `http://127.0.0.1:8080`：

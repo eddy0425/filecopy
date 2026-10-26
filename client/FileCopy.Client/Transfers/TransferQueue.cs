@@ -79,7 +79,8 @@ public sealed class TransferItem : INotifyPropertyChanged
         string[] units = ["B", "KB", "MB", "GB", "TB"];
         double v = bytes;
         int i = 0;
-        while (v >= 1024 && i < units.Length - 1) { v /= 1024; i++; }
+        // Compare the value as displayed (2 decimals), so 1023.999 KB shows as "1 MB", not "1024 KB".
+        while (Math.Round(v, 2) >= 1024 && i < units.Length - 1) { v /= 1024; i++; }
         return i == 0 ? $"{bytes} B" : $"{v:0.##} {units[i]}";
     }
 }

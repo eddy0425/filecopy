@@ -15,7 +15,7 @@ namespace FileCopy.Client;
 public partial class MainWindow : Window
 {
     private const int MaxLogLines = 500;
-    private static readonly string LogFile = Path.Combine(Settings.DataDir, "log.txt");
+    private static string LogFile => Path.Combine(Settings.DataDir, "log.txt");
 
     private readonly Settings _settings = Settings.Load();
     private readonly TransferQueue _transfers = new();

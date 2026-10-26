@@ -80,6 +80,9 @@ public sealed class ServerApi : IDisposable
     {
         using var cts = WithTimeout(ct);
         using var resp = await _http.PostAsJsonAsync("api/move", new { from, to }, cts.Token);
+        // The server refuses to replace an existing item (e.g. created by another device since the last refresh).
+        if (resp.StatusCode == HttpStatusCode.Conflict)
+            throw new IOException($"已存在同名项: {Path.GetFileName(to)}");
         resp.EnsureSuccessStatusCode();
     }
 

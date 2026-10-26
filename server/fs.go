@@ -133,6 +133,16 @@ func (s *Server) handleMove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, errBadPath.Error(), http.StatusBadRequest)
 		return
 	}
+	// Never replace an existing item; a case-only rename on a case-insensitive filesystem is the same file.
+	fromInfo, err := os.Stat(from)
+	if err != nil {
+		httpFsError(w, err)
+		return
+	}
+	if toInfo, err := os.Stat(to); err == nil && !os.SameFile(fromInfo, toInfo) {
+		http.Error(w, "already exists", http.StatusConflict)
+		return
+	}
 	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
 		httpFsError(w, err)
 		return

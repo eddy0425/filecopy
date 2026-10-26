@@ -333,10 +333,12 @@ public sealed class SyncService : IDisposable
         try
         {
             await _slots.WaitAsync(_cts.Token);
-            var before = new FileInfo(source);
-            var item = _transfers.Start(rel, TransferDirection.Upload, before.Length);
+            TransferItem? item = null;
             try
             {
+                // Inside the try: the source may have vanished (FileInfo.Length throws), and the slot must still be released.
+                var before = new FileInfo(source);
+                item = _transfers.Start(rel, TransferDirection.Upload, before.Length);
                 var entry = await _api.UploadAsync(source, rel, baseMtime, new Progress<long>(item.Report), _cts.Token);
                 var remote = new Dictionary<string, RemoteEntry>(_remote, StringComparer.OrdinalIgnoreCase) { [rel] = entry };
                 _remote = remote;
@@ -359,7 +361,7 @@ public sealed class SyncService : IDisposable
             }
             catch (Exception ex)
             {
-                item.Fail(ex is OperationCanceledException ? "已取消" : ex.Message);
+                item?.Fail(ex is OperationCanceledException ? "已取消" : ex.Message);
                 if (ex is not OperationCanceledException) _log($"上传 {rel} 失败: {ex.Message}");
                 return null;
             }
@@ -388,11 +390,24 @@ public sealed class SyncService : IDisposable
         {
             var e = _remote.GetValueOrDefault(rel);
             var snap = State.GetFile(rel);
-            if (snap != null && File.Exists(LocalPath(rel)))
+            var local = new FileInfo(LocalPath(rel));
+            if (snap != null && local.Exists)
             {
                 snap.Pinned = true;
                 State.Save();
                 Changed?.Invoke();
+            }
+            else if (local.Exists && e is { IsDir: false })
+            {
+                // A local copy that was never synced (e.g. copied into the mirror folder): adopt it
+                // or upload it like RefreshAsync does, never overwrite it with the server version.
+                if (SameAsRemote(local, e))
+                {
+                    State.SetFile(rel, Snapshot(e, local, pinned: true));
+                    State.Save();
+                    Changed?.Invoke();
+                }
+                else await UploadAsync(rel, baseMtime: IsBackupArchive(rel) ? e.Mtime : 0);
             }
             else if (e != null)
             {
@@ -443,20 +458,31 @@ public sealed class SyncService : IDisposable
                 {
                     var fr = ToRel(f);
                     if (_busy.ContainsKey(fr)) continue;
-                    if (_remote.ContainsKey(fr) || IsTemp(f)) TryDelete(f);
-                    State.RemoveFile(fr);
+                    if (IsTemp(f)) TryDelete(f);
+                    else FreeUpFile(fr, f);
                 }
                 RemoveEmptyStaleDirsUnder(full);
             }
         }
         else if (!_busy.ContainsKey(rel))
         {
-            TryDelete(full);
-            State.RemoveFile(rel);
+            FreeUpFile(rel, full);
         }
         State.Save();
         _log($"已释放空间: {rel}");
         Changed?.Invoke();
+    }
+
+    /// <summary>
+    /// Deletes the local copy of a server file. Local-only files are kept, and so is their snapshot:
+    /// a snapshot without a server file means "deleted on the server", and dropping it would make the
+    /// next refresh re-upload the file as new.
+    /// </summary>
+    private void FreeUpFile(string rel, string full)
+    {
+        if (!_remote.ContainsKey(rel)) return;
+        // Keep the snapshot if the copy stays (e.g. locked), or the next refresh would re-adopt it as pinned.
+        if (TryDelete(full)) State.RemoveFile(rel);
     }
 
     private static void RemoveEmptyStaleDirsUnder(string full)
@@ -469,12 +495,13 @@ public sealed class SyncService : IDisposable
         }
     }
 
-    private void TryDelete(string full)
+    private bool TryDelete(string full)
     {
-        try { File.Delete(full); }
+        try { File.Delete(full); return true; }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             _log($"无法删除 {full}: {ex.Message}");
+            return false;
         }
     }
 
@@ -585,22 +612,61 @@ public sealed class SyncService : IDisposable
     public async Task RenameAsync(string rel, string newName, bool isDir)
     {
         var target = Join(LocalState.Parent(rel), newName);
-        await _api.MoveAsync(rel, target, _cts.Token);
         var from = LocalPath(rel);
         var to = LocalPath(target);
+        // Refuse early (the server also answers 409); this also catches local-only items the server
+        // cannot see. A case-only rename is the same item.
+        if (!target.Equals(rel, StringComparison.OrdinalIgnoreCase) &&
+            (_remote.ContainsKey(target) || File.Exists(to) || Directory.Exists(to)))
+            throw new IOException($"已存在同名项: {newName}");
+        // Individually pinned files (at or under rel) that no kept folder would re-download, as server
+        // entries under their new names (the rename keeps size and mtime).
+        var pinnedTargets = State.FileKeys()
+            .Where(k => LocalState.IsSameOrUnder(k, rel) && State.GetFile(k)?.Pinned == true && !State.IsInKeptFolder(k))
+            .Select(k => _remote.GetValueOrDefault(k) is { IsDir: false } e ? e with { Path = target + k[rel.Length..] } : null)
+            .OfType<RemoteEntry>()
+            .ToList();
+        await _api.MoveAsync(rel, target, _cts.Token);
+        var movedLocally = true;
         try
         {
             if (isDir && Directory.Exists(from)) Directory.Move(from, to);
             else if (!isDir && File.Exists(from)) File.Move(from, to);
         }
-        catch (IOException ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            movedLocally = false;
             _log($"本地重命名失败（下次刷新时会重新同步）: {ex.Message}");
         }
-        State.MoveTree(rel, target);
+        // Move what is not locked one by one, so local-only files are not re-uploaded under the old name.
+        if (!movedLocally && isDir && Directory.Exists(from))
+        {
+            foreach (var f in Directory.EnumerateFiles(from, "*", System.IO.SearchOption.AllDirectories).Where(f => !IsTemp(f)).ToList())
+            {
+                var fr = ToRel(f);
+                var tr = target + fr[rel.Length..];
+                try
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(LocalPath(tr))!);
+                    File.Move(f, LocalPath(tr));
+                    State.MoveTree(fr, tr);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    _log($"无法移动 {fr}（下次刷新时会处理）: {ex.Message}");
+                }
+            }
+        }
+        // If the local copy stayed behind, so do its snapshots: the next refresh then treats the old
+        // path as deleted on the server (recycled, or re-uploaded if edited) instead of as new files.
+        State.MoveTree(rel, target, includeFiles: movedLocally);
         State.Save();
         _log($"已重命名: {rel} → {target}");
         await RefreshAsync();
+        // Fetch the individually pinned files under their new names. Not via KeepAsync: the refresh above
+        // returns early if another one is running, and _remote would not know the new names yet.
+        if (!movedLocally)
+            await Task.WhenAll(pinnedTargets.Where(e => !File.Exists(LocalPath(e.Path))).Select(e => DownloadAsync(e, pinned: true)));
     }
 
     /// <summary>Deletes on the server; local copies go to the Recycle Bin.</summary>
