@@ -5,6 +5,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using FileCopy.Client.Api;
 using FileCopy.Client.Backup;
 using FileCopy.Client.Local;
 using FileCopy.Client.Transfers;
@@ -15,6 +16,7 @@ namespace FileCopy.Client;
 public partial class MainWindow : Window
 {
     private const int MaxLogLines = 500;
+    private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(15);
     private static string LogFile => Path.Combine(Settings.DataDir, "log.txt");
     private static readonly object LogLock = new(); // not LogFile: that builds a new string (a new lock) on every call
 
@@ -26,6 +28,9 @@ public partial class MainWindow : Window
     private Task? _backup; // archive creation in progress, so Shutdown can wait for 7-Zip to be killed
     private string _folder = ""; // current server folder ("" = root)
     private int _reloadQueued;
+    private bool? _online; // heartbeat result for _sync; null while not connected
+    private bool _pinging;
+    private readonly System.Windows.Media.Brush _normalStatusBrush; // StatusText's foreground as set in XAML
 
     public bool StartMinimized { get; }
 
@@ -34,6 +39,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        _normalStatusBrush = StatusText.Foreground;
         FilesGrid.ItemsSource = _items;
         TransfersGrid.ItemsSource = _transfers.Items;
         StartMinimized = _settings.AutoConnect && _settings.GetToken().Length > 0;
@@ -44,6 +50,9 @@ public partial class MainWindow : Window
             else _ = ConnectAsync();
         };
         if (StartMinimized) _ = ConnectAsync();
+        var heartbeat = new System.Windows.Threading.DispatcherTimer { Interval = HeartbeatInterval };
+        heartbeat.Tick += Heartbeat_Tick;
+        heartbeat.Start();
     }
 
     // Closing the window keeps the app in the tray; exit from the tray menu.
@@ -65,6 +74,7 @@ public partial class MainWindow : Window
     {
         _sync?.Dispose();
         _sync = null;
+        _online = null;
     }
 
     public void Log(string message)
@@ -102,23 +112,75 @@ public partial class MainWindow : Window
     {
         if (_sync != null) return; // already connecting/connected
         StatusText.Text = "正在连接...";
+        StatusText.Foreground = _normalStatusBrush;
         var sync = new SyncService(_settings.ServerUrl, _settings.GetToken(), _settings.LocalFolder, _transfers, Log);
         sync.Changed += QueueReload;
         _sync = sync;
         try
         {
             await sync.StartAsync();
-            StatusText.Text = $"已连接 {_settings.ServerUrl}    本地保留文件夹: {sync.Root}";
+            if (_sync != sync) return; // replaced by a newer connection meanwhile
+            SetOnline(sync, true, null);
             Log("已连接 " + _settings.ServerUrl);
         }
         catch (Exception ex)
         {
-            if (_sync == sync) _sync = null;
             sync.Dispose();
-            StatusText.Text = "连接失败: " + ex.Message;
-            Log("连接失败: " + ex.Message);
+            if (_sync != sync) return; // replaced by a newer connection (e.g. settings changed): not a failure
+            _sync = null;
+            StatusText.Text = "连接失败: " + SyncService.ErrorText(ex);
+            StatusText.Foreground = System.Windows.Media.Brushes.Firebrick;
+            Log("连接失败: " + SyncService.ErrorText(ex));
         }
         Reload();
+    }
+
+    /// <summary>Pings the server periodically so a dropped connection shows up in the status bar.</summary>
+    private async void Heartbeat_Tick(object? sender, EventArgs e)
+    {
+        var sync = _sync;
+        if (sync == null || _online == null || _pinging) return;
+        _pinging = true;
+        try
+        {
+            await sync.PingAsync();
+            if (_sync == sync) SetOnline(sync, true, null);
+        }
+        catch (Exception ex)
+        {
+            if (_sync == sync) SetOnline(sync, false, ex);
+        }
+        finally
+        {
+            _pinging = false;
+        }
+    }
+
+    private void SetOnline(SyncService sync, bool online, Exception? failure)
+    {
+        var error = failure == null ? null : SyncService.ErrorText(failure);
+        var wasOnline = _online;
+        if (online && wasOnline == true) return; // nothing changed; keep the status bar as is
+        _online = online;
+        if (online)
+        {
+            StatusText.Text = $"已连接 {_settings.ServerUrl}    本地保留文件夹: {sync.Root}";
+            StatusText.Foreground = _normalStatusBrush;
+            if (wasOnline == false)
+            {
+                Log("已重新连接 " + _settings.ServerUrl);
+                _ = sync.RefreshAsync(); // re-sync kept items whose transfers failed while offline ("下载到…" jobs are not retried)
+            }
+        }
+        else
+        {
+            var unauthorized = failure is UnauthorizedException;
+            StatusText.Text = unauthorized
+                ? $"认证失败 {_settings.ServerUrl}（{error}），请在设置中检查 Token"
+                : $"连接已断开 {_settings.ServerUrl}（{error}），正在重试...";
+            StatusText.Foreground = System.Windows.Media.Brushes.Firebrick;
+            if (wasOnline != false) Log(unauthorized ? $"认证失败: {error}" : $"与服务器的连接已断开: {error}");
+        }
     }
 
     private void OpenSettings()

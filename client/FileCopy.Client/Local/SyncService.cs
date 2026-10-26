@@ -295,7 +295,7 @@ public sealed class SyncService : IDisposable
             {
                 var full = LocalPath(e.Path);
                 await _api.DownloadToFileAsync(e, full, new Progress<long>(item.Report), _cts.Token,
-                    canReplace: () => CanReplaceLocal(e));
+                    canReplace: () => CanReplaceLocal(e), onRetry: RetryReporter(item));
                 State.SetFile(e.Path, Snapshot(e, new FileInfo(full), pinned));
                 State.Save();
                 item.Complete();
@@ -335,10 +335,18 @@ public sealed class SyncService : IDisposable
     private bool IsCancelled(Exception ex) => ex is OperationCanceledException && _cts.IsCancellationRequested;
 
     /// <summary>
-    /// Relies on <see cref="ServerApi"/>'s per-request timeouts being the only other source of cancellation;
-    /// call it only for exceptions where <see cref="IsCancelled"/> is false.
+    /// User-facing text for a transfer/connection error. Reports any <see cref="OperationCanceledException"/> as a timeout,
+    /// relying on <see cref="ServerApi"/>'s per-request timeouts being the only other source of cancellation:
+    /// rule out cancellation by <see cref="Dispose"/> first (<see cref="IsCancelled"/> here; outside this class,
+    /// check that the service has not been disposed or replaced).
     /// </summary>
-    private static string ErrorText(Exception ex) => ex is OperationCanceledException ? "连接超时" : ex.Message;
+    public static string ErrorText(Exception ex) => ex is OperationCanceledException ? "连接超时" : ex.Message;
+
+    private static Action<int, Exception> RetryReporter(TransferItem item) =>
+        (attempt, ex) => item.Retrying(attempt, ServerApi.MaxRetries, ErrorText(ex));
+
+    /// <summary>Checks that the server is reachable (used for the connection heartbeat).</summary>
+    public Task PingAsync() => _api.PingAsync(_cts.Token);
 
     /// <summary>Uploads a file from the mirror folder and records the synced state.</summary>
     private Task UploadAsync(string rel, long baseMtime) => UploadFromAsync(LocalPath(rel), rel, baseMtime, trackAsKept: true);
@@ -364,7 +372,7 @@ public sealed class SyncService : IDisposable
                 // Inside the try: the source may have vanished (FileInfo.Length throws), and the slot must still be released.
                 var before = new FileInfo(source);
                 item = _transfers.Start(rel, TransferDirection.Upload, before.Length);
-                var entry = await _api.UploadAsync(source, rel, baseMtime, new Progress<long>(item.Report), _cts.Token);
+                var entry = await _api.UploadAsync(source, rel, baseMtime, new Progress<long>(item.Report), _cts.Token, RetryReporter(item));
                 var remote = new Dictionary<string, RemoteEntry>(_remote, StringComparer.OrdinalIgnoreCase) { [rel] = entry };
                 _remote = remote;
                 if (trackAsKept)
@@ -646,7 +654,7 @@ public sealed class SyncService : IDisposable
             var item = _transfers.Start(e.Path, TransferDirection.Download, e.Size);
             try
             {
-                await _api.DownloadToFileAsync(e, dest, new Progress<long>(item.Report), _cts.Token);
+                await _api.DownloadToFileAsync(e, dest, new Progress<long>(item.Report), _cts.Token, onRetry: RetryReporter(item));
                 item.Complete();
             }
             catch (Exception ex)

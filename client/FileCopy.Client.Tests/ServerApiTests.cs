@@ -1,4 +1,6 @@
 using System.IO;
+using System.Net;
+using System.Net.Sockets;
 using FileCopy.Client.Api;
 
 namespace FileCopy.Client.Tests;
@@ -31,7 +33,7 @@ public sealed class ServerApiTests : IDisposable
     public async Task Ping_WrongToken_Throws()
     {
         using var bad = new ServerApi(_server.Url, "wrong-token-0123456789");
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => bad.PingAsync());
+        var ex = await Assert.ThrowsAsync<UnauthorizedException>(() => bad.PingAsync());
         Assert.Contains("401", ex.Message);
         await _api.PingAsync();
     }
@@ -102,6 +104,19 @@ public sealed class ServerApiTests : IDisposable
         _server.Put("r.txt", "0123456789");
         var buf = await _api.DownloadRangeAsync("r.txt", 3, 4, default);
         Assert.Equal("3456", System.Text.Encoding.ASCII.GetString(buf));
+    }
+
+    [Fact]
+    public async Task DownloadRange_ServerDown_ReportsRetriesThenThrows()
+    {
+        // Bound but not listening: connections are refused, and no other test's server can take the port meanwhile.
+        using var reserved = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        reserved.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        using var api = new ServerApi($"http://127.0.0.1:{((IPEndPoint)reserved.LocalEndPoint!).Port}/", TestServer.Token);
+        var attempts = new List<int>();
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            api.DownloadRangeAsync("r.txt", 0, 4, default, (a, _) => attempts.Add(a))).T(60);
+        Assert.Equal(Enumerable.Range(1, ServerApi.MaxRetries - 1), attempts);
     }
 
     [Fact]

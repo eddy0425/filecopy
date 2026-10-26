@@ -1,4 +1,5 @@
 using System.IO;
+using FileCopy.Client.Api;
 using FileCopy.Client.Local;
 
 namespace FileCopy.Client.Tests;
@@ -87,7 +88,7 @@ public sealed class SyncServiceTests : IDisposable
     public async Task Start_WithWrongToken_Throws()
     {
         using var bad = new SyncService(_server.Url, "wrong-token-0123456789", TestEnv.NewDir("mirror"), new(), _ => { });
-        await Assert.ThrowsAsync<InvalidOperationException>(() => bad.StartAsync().T());
+        await Assert.ThrowsAsync<UnauthorizedException>(() => bad.StartAsync().T());
     }
 
     // ---------- keep / free up ----------

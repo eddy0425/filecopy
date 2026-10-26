@@ -11,10 +11,18 @@ public enum TransferDirection { Upload, Download }
 /// <summary>One row in the transfer list. Updated from worker threads, marshalled to the UI.</summary>
 public sealed class TransferItem : INotifyPropertyChanged
 {
+    private const string Running = "进行中";
+    // Uploads run chunks in parallel, so progress from healthy chunks would otherwise hide a retry at once.
+    private const double MinRetryDisplayMs = 3000;
+
     private readonly Stopwatch _clock = Stopwatch.StartNew();
+    private readonly object _statusLock = new(); // Status is set from worker threads and the UI thread
     private long _done;
-    private string _status = "进行中";
+    private string _status = Running;
     private double _lastUiUpdate;
+    private volatile bool _retrying;
+    private double _retryAt; // _clock time of the last Retrying call; guarded by _statusLock
+    private volatile bool _finished; // completed or failed: late progress/retry reports must not change Status
 
     public TransferItem(string path, TransferDirection direction, long size)
     {
@@ -42,6 +50,17 @@ public sealed class TransferItem : INotifyPropertyChanged
     public void Report(long done)
     {
         _done = done;
+        if (_retrying)
+        {
+            lock (_statusLock)
+            {
+                if (_retrying && !_finished && _clock.Elapsed.TotalMilliseconds - _retryAt >= MinRetryDisplayMs)
+                {
+                    _retrying = false;
+                    Status = Running;
+                }
+            }
+        }
         // Throttle UI updates to ~5/s per item.
         var now = _clock.Elapsed.TotalMilliseconds;
         if (now - _lastUiUpdate < 200 && done < Size) return;
@@ -56,13 +75,33 @@ public sealed class TransferItem : INotifyPropertyChanged
         _clock.Stop();
         OnChanged(nameof(Percent));
         OnChanged(nameof(SpeedText));
-        Status = "完成";
+        lock (_statusLock)
+        {
+            _finished = true;
+            Status = "完成";
+        }
+    }
+
+    /// <summary>Shows that a part of the transfer failed and is about to be retried.</summary>
+    public void Retrying(int attempt, int maxAttempts, string reason)
+    {
+        lock (_statusLock)
+        {
+            if (_finished) return;
+            _retryAt = _clock.Elapsed.TotalMilliseconds;
+            _retrying = true;
+            Status = $"重试中 ({attempt + 1}/{maxAttempts}): {reason}";
+        }
     }
 
     public void Fail(string message)
     {
         _clock.Stop();
-        Status = "失败: " + message;
+        lock (_statusLock)
+        {
+            _finished = true;
+            Status = "失败: " + message;
+        }
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
