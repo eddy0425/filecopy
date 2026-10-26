@@ -20,6 +20,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/eddy0425/filecopy/refs/heads
 - **冲突保护**：两边同时修改同一文件时，服务器把旧版本另存为 `name (conflict 时间).ext`，不会互相覆盖
 - **一键备份**：把 `D:\Config`、`D:\Recipes`、`D:\MechanicalParameters` 压缩成 `backup/<设备 ID>.7z` 并上传，按设备区分
 - 关闭窗口最小化到托盘，可设置开机自动连接
+- **控制面板**（浏览器访问 `/admin`）：一键允许 / 断开所有客户端连接；按设备 ID 查看在线状态、实时速度和累计流量（可重置、可在线修改设备 ID）；二步认证（TOTP）；云端文件管理（上传、下载、复制、移动、删除、回收站、只读文件夹）。详见 [控制面板](#控制面板)
 
 ### 状态图标
 
@@ -36,9 +37,13 @@ bash <(curl -fsSL https://raw.githubusercontent.com/eddy0425/filecopy/refs/heads
 filecopy.sh             服务端一键安装 / 升级脚本（Docker）
 server/                 Go 服务端（仅用标准库）
   main.go               配置加载、路由、启动
-  auth.go               Bearer Token 认证
-  fs.go                 路径安全检查、列目录、下载、删除、移动、新建文件夹
+  auth.go               客户端接口：Token 认证、连接开关、设备识别与流量统计
+  fs.go                 路径安全检查、列目录、下载、删除、移动、复制、新建文件夹
   upload.go             分块上传会话
+  state.go              服务端状态（.filecopy/state.json）：连接开关、设备、只读文件夹
+  admin.go              控制面板接口；admin/index.html 为面板网页（编译进二进制）
+  totp.go / qr.go       二步认证与二维码生成
+  trash.go              回收站
   server_test.go        测试
   config.example.json   配置示例
   filecopy.service      systemd 服务示例
@@ -88,12 +93,14 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/filecopy-
   "listen": ":8080",
   "dataDir": "./data",
   "token": "换成一串足够长的随机字符串",
+  "adminPassword": "控制面板初始密码",
   "tlsCert": "",
   "tlsKey": ""
 }
 ```
 
 - `token` 至少 16 个字符，可以用 `openssl rand -hex 32` 生成
+- `adminPassword` 是控制面板的初始密码，不填则用 `token` 登录面板；在面板中修改密码后以面板设置为准
 - `dataDir` 是服务器上存放文件的目录
 - 填了 `tlsCert` / `tlsKey` 就直接提供 HTTPS；否则建议在前面加 Caddy（见下文）
 
@@ -120,6 +127,25 @@ files.example.com {
 
 此时把 `config.json` 里的 `listen` 改成 `127.0.0.1:8080`，只让 Caddy 访问。Docker 部署则不改 `config.json`：用 `BIND=127.0.0.1` 重新运行安装命令，并把 `reverse_proxy` 改成 `127.0.0.1:8240`（或你指定的 `PORT`）。
 
+## 控制面板
+
+浏览器打开 `http://服务器地址:端口/admin`（配置了 HTTPS 则用 `https://`），用管理密码登录。面板与客户端共用同一端口，可从公网访问，由管理密码、二步认证和失败锁定（同一 IP 连续输错 5 次锁定 5 分钟）保护；**强烈建议配置 HTTPS**，否则密码以明文传输，面板顶部也会提示。
+
+- **连接**：
+  - 开关 "允许连接"：关闭后所有客户端请求被拒绝（客户端显示 "服务器已暂停连接"），正在进行的传输立即中断；面板不受影响，服务器重启后保持关闭
+  - 设备列表：按客户端设置里的设备 ID 区分，显示 IP、最后活动、在线状态（60 秒内有请求）、实时上传 / 下载速度、累计流量；可单个或全部重置流量
+  - 点击设备 ID 可修改，客户端下次连接服务器时自动更新自己的设置（客户端确认前显示 "待同步"）；已有的备份包不改名，下次备份使用新 ID
+  - 同一设备 ID 同时从多个 IP 连接时标红 "ID 冲突"
+  - 顶部显示数据占用、回收站占用和磁盘剩余空间（约每分钟更新）
+- **文件**：上传（文件、文件夹、拖放）、下载、新建文件夹、重命名、复制到、移动到、删除、设为只读 / 取消只读
+  - **只读文件夹**：客户端只能下载，不能上传、新建、重命名、删除，也不能删除或移动包含它的上级文件夹；客户端在本地保留文件夹里修改的文件会被恢复为云端版本（修改的版本移到 Windows 回收站），新建的文件会被移到回收站，不会上传。面板不受限制
+- **回收站**：客户端和面板删除的文件都进入服务器回收站，可还原（原位置被占用时还原为 `name (restored 时间).ext`）或永久删除；超过 30 天自动清理
+- **安全**：
+  - 启用二步认证（TOTP）：用 Google Authenticator、Microsoft Authenticator 等验证器 App 扫码。启用后登录面板需要 6 位验证码；客户端**关闭到托盘后**再次打开（或打开同步文件夹）也需要验证码，解锁后 5 分钟内重新打开免验证，连不上服务器时无法解锁
+  - 修改管理密码（需当前密码和验证码），修改后其他已登录的会话被退出
+
+面板的状态（连接开关、设备与流量、二步认证密钥、修改后的密码、只读文件夹）保存在数据目录下的 `.filecopy/state.json`，回收站在 `.filecopy/trash/`，客户端看不到这个目录。
+
 ## 客户端
 
 ### 运行要求
@@ -143,7 +169,7 @@ dotnet build -c Release
    - **服务器地址**：如 `https://files.example.com` 或 `http://1.2.3.4:8240`
    - **Token**：与服务端 `config.json` 中一致
    - **本地保留文件夹**："保留在本机" 的文件存放在这里（默认 `文档\FileCopy\data`；如果 "文档" 已被 OneDrive 接管同步，建议改到 OneDrive 之外的位置，避免两边同步互相干扰）
-   - **设备 ID**：用于区分不同电脑的备份，如 `XZT1-CB`（不用备份可留空）
+   - **设备 ID**（必填）：区分不同电脑，用于控制面板的设备列表和备份包命名，如 `XZT1-CB`；可在控制面板中在线修改
 2. 双击文件夹进入，双击文件打开（未下载的会先下载）
 3. 右键文件或文件夹：
    - **始终保留在此设备上**：下载并保持同步；对文件夹设置后，服务器上新加进来的文件也会自动下载
@@ -152,6 +178,8 @@ dotnet build -c Release
 5. 点 "备份"：把三个设备文件夹压缩为 `<本地保留文件夹>\backup\<设备 ID>.7z` 并上传到服务器 `backup/`，同名覆盖只保留最新
 
 快捷键：`Enter` 打开，`Backspace` 返回上级，`F2` 重命名，`Delete` 删除，`F5` 刷新。
+
+服务端启用二步认证后，窗口关闭到托盘再从托盘打开时需要输入验证码；控制面板设置的只读文件夹带 🔒 标记，其中的上传、新建、重命名、删除不可用。删除的文件进入服务器回收站，可在控制面板中还原。
 
 ### 本机数据位置
 
@@ -166,14 +194,15 @@ dotnet build -c Release
 
 ## 服务端 API
 
-所有请求都需要请求头 `Authorization: Bearer <token>`，路径参数均为相对于数据目录的 `/` 分隔路径。
+所有请求都需要请求头 `Authorization: Bearer <token>` 和 `X-Equipment-Id: <设备 ID>`（URL 编码，缺少时返回 400），路径参数均为相对于数据目录的 `/` 分隔路径。连接被控制面板断开时所有接口返回 503；在只读文件夹中做修改返回 403。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/ping` | 连通性检查 |
-| GET | `/api/tree` | 递归列出全部条目 `[{path, isDir, size, mtime}]`，`mtime` 为 Unix 毫秒 |
+| GET | `/api/ping` | 连通性检查，返回 `{status, totp, equipmentId}`：是否启用二步认证，以及服务器认定的设备 ID（在面板中改名后与请求头不同） |
+| POST | `/api/totp/verify` | `{code}` 校验二步验证码（客户端解锁用）：正确 204，错误 403，尝试过多 429 |
+| GET | `/api/tree` | 递归列出全部条目 `[{path, isDir, size, mtime, readOnly}]`，`mtime` 为 Unix 毫秒，`readOnly` 表示位于只读文件夹中 |
 | GET | `/api/file?path=` | 下载，支持 `Range`（断点续传、多连接分块） |
-| DELETE | `/api/file?path=` | 删除文件或文件夹 |
+| DELETE | `/api/file?path=` | 删除文件或文件夹（移入服务器回收站） |
 | POST | `/api/move` | `{from, to}` 重命名 / 移动；目标已存在时返回 409（仅大小写不同的同一项除外） |
 | POST | `/api/mkdir` | `{path}` 新建文件夹 |
 | POST | `/api/upload/init` | `{path, size, mtime}` → `{id, chunkSize}`，开始分块上传 |
