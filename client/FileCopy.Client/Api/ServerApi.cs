@@ -154,9 +154,11 @@ public sealed class ServerApi : IDisposable
 
     /// <summary>
     /// Downloads a whole file to <paramref name="localPath"/> via a ".fcpart" temp file,
-    /// then renames it into place and applies the server mtime.
+    /// then renames it into place and applies the server mtime. <paramref name="canReplace"/> is asked
+    /// just before that rename; if it returns false the download is discarded and an IOException thrown.
     /// </summary>
-    public async Task DownloadToFileAsync(RemoteEntry entry, string localPath, IProgress<long>? progress, CancellationToken ct)
+    public async Task DownloadToFileAsync(RemoteEntry entry, string localPath, IProgress<long>? progress, CancellationToken ct,
+        Func<bool>? canReplace = null)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(localPath)!);
         var part = localPath + ".fcpart";
@@ -174,6 +176,8 @@ public sealed class ServerApi : IDisposable
                 }, ct);
             }
             File.SetLastWriteTimeUtc(part, DateTimeOffset.FromUnixTimeMilliseconds(entry.Mtime).UtcDateTime);
+            if (canReplace?.Invoke() == false)
+                throw new IOException("目标文件在下载过程中被修改，已放弃本次下载");
             File.Move(part, localPath, overwrite: true);
         }
         catch

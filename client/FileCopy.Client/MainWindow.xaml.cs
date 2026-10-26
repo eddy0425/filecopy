@@ -16,6 +16,7 @@ public partial class MainWindow : Window
 {
     private const int MaxLogLines = 500;
     private static string LogFile => Path.Combine(Settings.DataDir, "log.txt");
+    private static readonly object LogLock = new(); // not LogFile: that builds a new string (a new lock) on every call
 
     private readonly Settings _settings = Settings.Load();
     private readonly TransferQueue _transfers = new();
@@ -69,7 +70,7 @@ public partial class MainWindow : Window
     public void Log(string message)
     {
         var line = $"{DateTime.Now:HH:mm:ss}  {message}";
-        lock (LogFile)
+        lock (LogLock)
         {
             try { File.AppendAllText(LogFile, $"{DateTime.Now:yyyy-MM-dd} {line}{Environment.NewLine}"); }
             catch (IOException) { }

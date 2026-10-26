@@ -24,6 +24,10 @@ public sealed class SyncServiceTests : IDisposable
 
     private static Task Refresh(TestClient c) => c.Sync.RefreshAsync().T();
 
+    private static string StatePath(TestClient c) =>
+        (string)typeof(LocalState).GetField("_path", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+            .GetValue(c.Sync.State)!;
+
     // ---------- listing & status ----------
 
     [Fact]
@@ -38,6 +42,45 @@ public sealed class SyncServiceTests : IDisposable
         Assert.Equal(FileStatus.CloudOnly, c.Sync.GetFileStatus("top.txt"));
         Assert.Equal(["docs/a.txt"], c.Sync.List("docs").Remote.Select(e => e.Path));
         Assert.False(File.Exists(c.Local("top.txt")));
+    }
+
+    [Fact]
+    public async Task List_ShowsLocalOnlyItems_AndHidesTempFiles()
+    {
+        _server.Put("docs/a.txt", "a");
+        var c = await Connect();
+        c.Write("docs/mine.txt", "m");
+        c.Write("docs/a.txt.fcpart", "partial download");
+        Directory.CreateDirectory(c.Local("docs/local-dir"));
+
+        var listing = c.Sync.List("docs");
+
+        Assert.Equal(["docs/a.txt"], listing.Remote.Select(e => e.Path));
+        Assert.Equal(["docs/mine.txt"], listing.LocalOnlyFiles);
+        Assert.Equal(["docs/local-dir"], listing.LocalOnlyDirs);
+        Assert.Equal(FileStatus.LocalOnly, c.Sync.GetFileStatus("docs/mine.txt"));
+    }
+
+    [Fact]
+    public async Task Status_ServerEditNotYetDownloaded_IsPendingDownload()
+    {
+        _server.Put("a.txt", "v1");
+        var c = await Connect();
+        await c.Sync.KeepAsync("a.txt", false).T();
+        _server.Put("a.txt", "v2", DateTime.UtcNow.AddMinutes(-1));
+
+        // The open file cannot be replaced, so the download fails and the update stays pending.
+        using (File.Open(c.Local("a.txt"), FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            await Refresh(c);
+        }
+        Assert.Equal("v1", c.Read("a.txt"));
+        Assert.False(File.Exists(c.Local("a.txt") + ".fcpart"));
+        Assert.Equal(FileStatus.PendingDownload, c.Sync.GetFileStatus("a.txt"));
+
+        await Refresh(c);
+        Assert.Equal("v2", c.Read("a.txt"));
+        Assert.Equal(FileStatus.Kept, c.Sync.GetFileStatus("a.txt"));
     }
 
     [Fact]
@@ -83,6 +126,43 @@ public sealed class SyncServiceTests : IDisposable
         await c.Sync.KeepAsync("a.txt", isDir: false).T();
 
         Assert.Equal("local edits", c.Read("a.txt"));
+    }
+
+    [Fact]
+    public async Task KeepFile_WithIdenticalLocalCopy_AdoptsItWithoutUpload()
+    {
+        var mtime = _server.Put("a.txt", "same");
+        var c = await Connect();
+        File.WriteAllText(c.Local("a.txt"), "same");
+        File.SetLastWriteTimeUtc(c.Local("a.txt"), DateTimeOffset.FromUnixTimeMilliseconds(mtime).UtcDateTime);
+
+        await c.Sync.KeepAsync("a.txt", false).T();
+
+        Assert.Equal(FileStatus.Kept, c.Sync.GetFileStatus("a.txt"));
+        Assert.True(c.Sync.State.IsPinned("a.txt"));
+        Assert.DoesNotContain("已上传", c.LogText);
+        Assert.Empty(_server.FilesLike("", "a (conflict"));
+    }
+
+    [Fact]
+    public async Task Unpin_FileInKeptFolder_KeepsSiblingsPinned()
+    {
+        _server.Put("docs/a.txt", "a");
+        _server.Put("docs/b.txt", "b");
+        var c = await Connect();
+        await c.Sync.KeepAsync("docs", true).T();
+
+        c.Sync.Unpin("docs/a.txt");
+
+        Assert.False(c.Sync.State.IsPinned("docs/a.txt"));
+        Assert.True(c.Sync.State.IsPinned("docs/b.txt"));
+        Assert.Equal(FileStatus.Kept, c.Sync.GetFileStatus("docs/a.txt")); // the local copy stays
+
+        // The folder is no longer kept: new server files are not downloaded.
+        _server.Put("docs/new.txt", "n");
+        await Refresh(c);
+        Assert.False(File.Exists(c.Local("docs/new.txt")));
+        Assert.Equal("b", c.Read("docs/b.txt"));
     }
 
     [Fact]
@@ -209,6 +289,50 @@ public sealed class SyncServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Refresh_LocalEditDuringDownload_IsNotOverwritten()
+    {
+        _server.Put("docs/a.txt", "v1");
+        var c = await Connect();
+        await c.Sync.KeepAsync("docs", true).T();
+
+        _server.Put("docs/a.txt", "server edit", DateTime.UtcNow.AddMinutes(-1));
+        // Edit the local copy after the refresh decided to download, before the download replaces it.
+        var edited = 0;
+        c.Sync.Changed += () =>
+        {
+            if (c.Sync.IsBusy("docs/a.txt") && Interlocked.Exchange(ref edited, 1) == 0)
+                c.Write("docs/a.txt", "local edit");
+        };
+        await Refresh(c);
+        Assert.Equal(1, edited);
+        Assert.Equal("local edit", c.Read("docs/a.txt"));
+
+        // The next refresh uploads the edit; the server keeps its version as a conflict copy.
+        await Refresh(c);
+        Assert.Equal("local edit", _server.Read("docs/a.txt"));
+        var conflict = Assert.Single(_server.FilesLike("docs", "a (conflict"));
+        Assert.Equal("server edit", _server.Read("docs/" + conflict));
+    }
+
+    [Fact]
+    public async Task Refresh_NewLocalFileDuringDownload_IsNotOverwritten()
+    {
+        var c = await Connect();
+        await c.Sync.KeepAsync("docs", true).T();
+
+        _server.Put("docs/a.txt", "server");
+        var created = 0;
+        c.Sync.Changed += () =>
+        {
+            if (c.Sync.IsBusy("docs/a.txt") && Interlocked.Exchange(ref created, 1) == 0)
+                c.Write("docs/a.txt", "local");
+        };
+        await Refresh(c);
+        Assert.Equal(1, created);
+        Assert.Equal("local", c.Read("docs/a.txt"));
+    }
+
+    [Fact]
     public async Task Refresh_UploadsNewLocalFile()
     {
         var c = await Connect();
@@ -268,6 +392,43 @@ public sealed class SyncServiceTests : IDisposable
         await Refresh(c);
         Assert.Equal("new archive", _server.Read("backup/DEV1.7z"));
         Assert.Empty(_server.FilesLike("backup", "DEV1 (conflict"));
+    }
+
+    [Fact]
+    public async Task Refresh_MirrorsServerFolders_InKeptFolderOnly()
+    {
+        _server.Put("docs/a.txt", "a");
+        var c = await Connect();
+        await c.Sync.KeepAsync("docs", true).T();
+
+        Directory.CreateDirectory(_server.PathOf("docs/new-empty"));
+        Directory.CreateDirectory(_server.PathOf("elsewhere"));
+        await Refresh(c);
+        Assert.True(Directory.Exists(c.Local("docs/new-empty")));
+        Assert.False(Directory.Exists(c.Local("elsewhere")));
+
+        // Deleted on the server: the empty local folder goes too.
+        Directory.Delete(_server.PathOf("docs/new-empty"));
+        await Refresh(c);
+        Assert.False(Directory.Exists(c.Local("docs/new-empty")));
+        Assert.True(Directory.Exists(c.Local("docs")));
+    }
+
+    [Fact]
+    public async Task Refresh_AfterStateLoss_ReadoptsIdenticalFiles()
+    {
+        _server.Put("docs/a.txt", "a");
+        var c1 = await Connect();
+        await c1.Sync.KeepAsync("docs", true).T();
+        c1.Sync.Dispose();
+        File.Delete(StatePath(c1));
+
+        var c2 = await Connect(c1.Root);
+
+        Assert.Equal(FileStatus.Kept, c2.Sync.GetFileStatus("docs/a.txt"));
+        Assert.NotNull(c2.Sync.State.GetFile("docs/a.txt"));
+        Assert.DoesNotContain("已上传", c2.LogText);
+        Assert.Empty(_server.FilesLike("docs", "a (conflict"));
     }
 
     [Fact]
@@ -358,6 +519,85 @@ public sealed class SyncServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task UploadPaths_IntoKeptFolder_KeepsUnsyncedLocalEdit()
+    {
+        _server.Put("docs/a.txt", "v1");
+        var c = await Connect();
+        await c.Sync.KeepAsync("docs", true).T();
+        c.Write("docs/a.txt", "local edit"); // not uploaded yet
+
+        var src = Path.Combine(TestEnv.NewDir("src"), "a.txt");
+        File.WriteAllText(src, "dragged");
+        await c.Sync.UploadPathsAsync([src], "docs").T();
+        await Refresh(c);
+
+        // The uploaded file wins; the unsynced edit survives as a conflict copy on both sides.
+        Assert.Equal("dragged", _server.Read("docs/a.txt"));
+        Assert.Equal("dragged", c.Read("docs/a.txt"));
+        var conflict = Assert.Single(_server.FilesLike("docs", "a (conflict"));
+        Assert.Equal("local edit", _server.Read("docs/" + conflict));
+        Assert.Equal("local edit", c.Read("docs/" + conflict));
+        Assert.Equal(FileStatus.Kept, c.Sync.GetFileStatus("docs/a.txt"));
+    }
+
+    [Fact]
+    public async Task UploadPaths_IntoKeptFolder_NotYetAdoptedCopy_MakesNoConflictCopy()
+    {
+        _server.Put("docs/a.txt", "v1");
+        var c = await Connect();
+        await c.Sync.KeepAsync("docs", true).T();
+        c.Sync.State.RemoveFile("docs/a.txt"); // e.g. state lost: the copy matches the server but has no snapshot
+
+        var src = Path.Combine(TestEnv.NewDir("src"), "a.txt");
+        File.WriteAllText(src, "dragged");
+        await c.Sync.UploadPathsAsync([src], "docs").T();
+        await Refresh(c);
+
+        Assert.Equal("dragged", c.Read("docs/a.txt"));
+        Assert.Equal(["a.txt"], Directory.GetFiles(c.Local("docs")).Select(Path.GetFileName));
+        Assert.Empty(_server.FilesLike("docs", "a (conflict"));
+    }
+
+    [Fact]
+    public async Task UploadPaths_IntoKeptFolder_LockedLocalCopy_DoesNotFailAndLosesNothing()
+    {
+        _server.Put("docs/a.txt", "v1");
+        var c = await Connect();
+        await c.Sync.KeepAsync("docs", true).T();
+        c.Write("docs/a.txt", "local edit");
+
+        var src = Path.Combine(TestEnv.NewDir("src"), "a.txt");
+        File.WriteAllText(src, "dragged");
+        using (File.Open(c.Local("docs/a.txt"), FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            await c.Sync.UploadPathsAsync([src], "docs").T(); // must not throw: the upload itself succeeded
+        }
+        Assert.Equal("dragged", _server.Read("docs/a.txt"));
+        Assert.Contains("本地副本未能更新", c.LogText);
+
+        // Once unlocked, the edit is uploaded and the dragged version kept as a conflict copy.
+        await Refresh(c);
+        Assert.Equal("local edit", _server.Read("docs/a.txt"));
+        var conflict = Assert.Single(_server.FilesLike("docs", "a (conflict"));
+        Assert.Equal("dragged", _server.Read("docs/" + conflict));
+    }
+
+    [Fact]
+    public async Task UploadPaths_IntoFolderNotKept_DoesNotMirrorLocally()
+    {
+        _server.Put("docs/a.txt", "a");
+        var c = await Connect();
+        var src = Path.Combine(TestEnv.NewDir("src"), "b.txt");
+        File.WriteAllText(src, "b");
+
+        await c.Sync.UploadPathsAsync([src], "docs").T();
+
+        Assert.Equal("b", _server.Read("docs/b.txt"));
+        Assert.False(File.Exists(c.Local("docs/b.txt")));
+        Assert.Equal(FileStatus.CloudOnly, c.Sync.GetFileStatus("docs/b.txt"));
+    }
+
+    [Fact]
     public async Task DownloadTo_Folder_WritesTreeWithoutKeeping()
     {
         _server.Put("docs/a.txt", "a");
@@ -440,6 +680,23 @@ public sealed class SyncServiceTests : IDisposable
         Assert.Equal(["A.txt"], Directory.GetFiles(c.Local("docs")).Select(Path.GetFileName));
         Assert.Equal(["A.txt"], Directory.GetFiles(_server.PathOf("docs")).Select(Path.GetFileName));
         Assert.Equal(FileStatus.Kept, c.Sync.GetFileStatus("docs/A.txt"));
+    }
+
+    [Fact]
+    public async Task Rename_KeptFolder_CaseOnly()
+    {
+        _server.Put("docs/a.txt", "a");
+        var c = await Connect();
+        await c.Sync.KeepAsync("docs", true).T();
+
+        await c.Sync.RenameAsync("docs", "Docs", true).T();
+        await Refresh(c);
+
+        Assert.Equal(["Docs"], Directory.GetDirectories(c.Root).Select(Path.GetFileName));
+        Assert.Equal(["Docs"], Directory.GetDirectories(_server.DataDir).Select(Path.GetFileName).Where(n => n != ".uploads"));
+        Assert.Equal("a", c.Read("Docs/a.txt"));
+        Assert.True(c.Sync.State.IsInKeptFolder("Docs/a.txt"));
+        Assert.Equal(FileStatus.Kept, c.Sync.GetFileStatus("Docs/a.txt"));
     }
 
     [Fact]

@@ -64,6 +64,39 @@ public sealed class ServerApiTests : IDisposable
     }
 
     [Fact]
+    public async Task DownloadToFile_CanReplaceFalse_KeepsExistingFile()
+    {
+        _server.Put("r.txt", "server");
+        var remote = (await _api.GetTreeAsync()).Single(e => e.Path == "r.txt");
+        var dest = Path.Combine(_dir, "keep", "r.txt");
+        Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+        File.WriteAllText(dest, "local");
+
+        await Assert.ThrowsAsync<IOException>(() => _api.DownloadToFileAsync(remote, dest, null, default, canReplace: () => false));
+
+        Assert.Equal("local", File.ReadAllText(dest));
+        Assert.False(File.Exists(dest + ".fcpart"));
+    }
+
+    [Theory]
+    [InlineData("空格 和 中文/a b.txt")]
+    [InlineData("special/#100% & co+.txt")]
+    public async Task Upload_ThenDownload_EscapesPaths(string rel)
+    {
+        var src = LocalFile("special.bin", 100);
+        var entry = await _api.UploadAsync(src, rel, 0, null, default).T();
+        Assert.Equal(rel, entry.Path);
+        Assert.Equal(File.ReadAllBytes(src), File.ReadAllBytes(_server.PathOf(rel)));
+
+        var dest = Path.Combine(_dir, "special-down.bin");
+        await _api.DownloadToFileAsync(entry, dest, null, default).T();
+        Assert.Equal(File.ReadAllBytes(src), File.ReadAllBytes(dest));
+
+        await _api.DeleteAsync(rel);
+        Assert.False(_server.Exists(rel));
+    }
+
+    [Fact]
     public async Task DownloadRange_ReturnsRequestedBytes()
     {
         _server.Put("r.txt", "0123456789");

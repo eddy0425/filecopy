@@ -216,6 +216,8 @@ public sealed class SyncService : IDisposable
                     if (State.IsInKeptFolder(r.Path)) Directory.CreateDirectory(LocalPath(r.Path));
                     continue;
                 }
+                // Being downloaded: the file may have landed (with its snapshot) after the scan above.
+                if (_busy.ContainsKey(r.Path)) continue;
                 // A snapshot without a local file means the copy was deleted outside the app.
                 State.RemoveFile(r.Path);
                 if (State.IsInKeptFolder(r.Path)) jobs.Add(DownloadAsync(r, pinned: true));
@@ -223,15 +225,15 @@ public sealed class SyncService : IDisposable
 
             // 3. Snapshots of files that vanished on both sides.
             foreach (var rel in State.FileKeys())
-                if (!localSet.Contains(rel) && !remote.ContainsKey(rel)) State.RemoveFile(rel);
+                if (!localSet.Contains(rel) && !remote.ContainsKey(rel) && !_busy.ContainsKey(rel)) State.RemoveFile(rel);
 
             RemoveEmptyStaleDirs(remote);
             State.Save();
         }
-        catch (OperationCanceledException) { }
+        catch (Exception ex) when (IsCancelled(ex)) { }
         catch (Exception ex) when (treeFetched || !throwOnTreeError)
         {
-            _log("刷新失败: " + ex.Message);
+            _log("刷新失败: " + ErrorText(ex));
         }
         finally
         {
@@ -292,15 +294,16 @@ public sealed class SyncService : IDisposable
             try
             {
                 var full = LocalPath(e.Path);
-                await _api.DownloadToFileAsync(e, full, new Progress<long>(item.Report), _cts.Token);
+                await _api.DownloadToFileAsync(e, full, new Progress<long>(item.Report), _cts.Token,
+                    canReplace: () => CanReplaceLocal(e));
                 State.SetFile(e.Path, Snapshot(e, new FileInfo(full), pinned));
                 State.Save();
                 item.Complete();
             }
             catch (Exception ex)
             {
-                item.Fail(ex is OperationCanceledException ? "已取消" : ex.Message);
-                if (ex is not OperationCanceledException) _log($"下载 {e.Path} 失败: {ex.Message}");
+                item.Fail(IsCancelled(ex) ? "已取消" : ErrorText(ex));
+                if (!IsCancelled(ex)) _log($"下载 {e.Path} 失败: {ErrorText(ex)}");
             }
             finally
             {
@@ -314,6 +317,28 @@ public sealed class SyncService : IDisposable
             Changed?.Invoke();
         }
     }
+
+    /// <summary>
+    /// A download may only replace a local copy that is still the last synced version (or identical to
+    /// the server file). The decision to download was made earlier; the user may have edited or created
+    /// the file since, and that must not be overwritten.
+    /// </summary>
+    private bool CanReplaceLocal(RemoteEntry e)
+    {
+        var local = new FileInfo(LocalPath(e.Path));
+        if (!local.Exists || SameAsRemote(local, e)) return true;
+        var snap = State.GetFile(e.Path);
+        return snap != null && !LocalChanged(local, snap);
+    }
+
+    /// <summary>Cancelled by Dispose, as opposed to a request timeout (also an OperationCanceledException).</summary>
+    private bool IsCancelled(Exception ex) => ex is OperationCanceledException && _cts.IsCancellationRequested;
+
+    /// <summary>
+    /// Relies on <see cref="ServerApi"/>'s per-request timeouts being the only other source of cancellation;
+    /// call it only for exceptions where <see cref="IsCancelled"/> is false.
+    /// </summary>
+    private static string ErrorText(Exception ex) => ex is OperationCanceledException ? "连接超时" : ex.Message;
 
     /// <summary>Uploads a file from the mirror folder and records the synced state.</summary>
     private Task UploadAsync(string rel, long baseMtime) => UploadFromAsync(LocalPath(rel), rel, baseMtime, trackAsKept: true);
@@ -361,8 +386,8 @@ public sealed class SyncService : IDisposable
             }
             catch (Exception ex)
             {
-                item?.Fail(ex is OperationCanceledException ? "已取消" : ex.Message);
-                if (ex is not OperationCanceledException) _log($"上传 {rel} 失败: {ex.Message}");
+                item?.Fail(IsCancelled(ex) ? "已取消" : ErrorText(ex));
+                if (!IsCancelled(ex)) _log($"上传 {rel} 失败: {ErrorText(ex)}");
                 return null;
             }
             finally
@@ -559,18 +584,55 @@ public sealed class SyncService : IDisposable
     private async Task<bool> UploadExternalAsync(string source, string rel)
     {
         bool fromMirror = string.Equals(Path.GetFullPath(source), LocalPath(rel), StringComparison.OrdinalIgnoreCase);
-        var entry = await UploadFromAsync(source, rel, _remote.GetValueOrDefault(rel)?.Mtime ?? 0, trackAsKept: fromMirror);
+        var previous = _remote.GetValueOrDefault(rel); // UploadFromAsync replaces it with the new entry
+        var entry = await UploadFromAsync(source, rel, previous?.Mtime ?? 0, trackAsKept: fromMirror);
         // Uploading into a kept folder: put a copy in the mirror so it is not downloaded again.
         if (entry != null && !fromMirror && State.IsInKeptFolder(rel))
         {
             var full = LocalPath(rel);
-            Directory.CreateDirectory(Path.GetDirectoryName(full)!);
-            File.Copy(source, full, overwrite: true);
-            File.SetLastWriteTimeUtc(full, DateTimeOffset.FromUnixTimeMilliseconds(entry.Mtime).UtcDateTime);
-            State.SetFile(rel, Snapshot(entry, new FileInfo(full), pinned: true));
-            State.Save();
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+                KeepUnsyncedAsConflictCopy(rel, new FileInfo(source), previous);
+                File.Copy(source, full, overwrite: true);
+                // Cosmetic only: the snapshot below records whatever mtime the copy ends up with, so a
+                // failure here must not skip it (the copy would then look edited and be uploaded again).
+                try { File.SetLastWriteTimeUtc(full, DateTimeOffset.FromUnixTimeMilliseconds(entry.Mtime).UtcDateTime); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+                State.SetFile(rel, Snapshot(entry, new FileInfo(full), pinned: true));
+                State.Save();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // The upload succeeded; the next refresh reconciles the local copy.
+                _log($"已上传 {rel}，但本地副本未能更新（可能被占用）；若本地有未上传的修改，" +
+                     $"下次刷新后刚上传的版本会保留为冲突副本: {ex.Message}");
+            }
         }
         return entry != null;
+    }
+
+    /// <summary>
+    /// Before the mirror copy of <paramref name="rel"/> is replaced by <paramref name="incoming"/>: if it holds
+    /// changes that never reached the server, renames it like the server names conflict copies
+    /// ("name (conflict 20260102-150405).ext"). The next refresh uploads it as a new file.
+    /// <paramref name="previous"/> is the server entry before the upload: a copy without a snapshot that
+    /// matches it is merely not adopted yet, not changed.
+    /// </summary>
+    private void KeepUnsyncedAsConflictCopy(string rel, FileInfo incoming, RemoteEntry? previous)
+    {
+        var local = new FileInfo(LocalPath(rel));
+        if (!local.Exists) return;
+        if (local.Length == incoming.Length && local.LastWriteTimeUtc == incoming.LastWriteTimeUtc) return;
+        var snap = State.GetFile(rel);
+        if (snap != null ? !LocalChanged(local, snap) : previous is { IsDir: false } && SameAsRemote(local, previous)) return;
+
+        var stem = Path.Combine(local.DirectoryName!, Path.GetFileNameWithoutExtension(local.Name))
+                   + $" (conflict {DateTime.Now:yyyyMMdd-HHmmss})";
+        var copy = stem + local.Extension;
+        for (int i = 2; File.Exists(copy) || Directory.Exists(copy); i++) copy = $"{stem} {i}{local.Extension}";
+        File.Move(local.FullName, copy);
+        _log($"{rel} 的本地修改尚未上传，已另存为 {ToRel(copy)}");
     }
 
     /// <summary>Saves a server file or folder to an arbitrary local path without keeping it.</summary>
@@ -589,8 +651,8 @@ public sealed class SyncService : IDisposable
             }
             catch (Exception ex)
             {
-                item.Fail(ex.Message);
-                _log($"下载 {e.Path} 失败: {ex.Message}");
+                item.Fail(IsCancelled(ex) ? "已取消" : ErrorText(ex));
+                if (!IsCancelled(ex)) _log($"下载 {e.Path} 失败: {ErrorText(ex)}");
             }
             finally
             {
