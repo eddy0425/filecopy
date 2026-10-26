@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -77,6 +78,39 @@ func (m *meteredWriter) Write(p []byte) (int, error) {
 }
 
 func (m *meteredWriter) Unwrap() http.ResponseWriter { return m.ResponseWriter }
+
+// readFromSegment bounds how much is sent between checks for a cut. Well below the client's 4 MB
+// chunk, so a pause also cuts the chunks in flight, and the speed meter stays smooth.
+const readFromSegment = 1 << 20
+
+// ReadFrom keeps http.ServeContent on the sendfile path: it hands segments to the underlying
+// ReadFrom, metering and checking for a cut between them. A LimitedReader (from io.CopyN) is
+// unwrapped rather than wrapped again: sendfile looks through one LimitedReader only.
+func (m *meteredWriter) ReadFrom(src io.Reader) (int64, error) {
+	rf, ok := m.ResponseWriter.(io.ReaderFrom)
+	if !ok {
+		return io.Copy(struct{ io.Writer }{m}, src) // hide ReadFrom so io.Copy uses Write
+	}
+	lr, ok := src.(*io.LimitedReader)
+	if !ok {
+		lr = &io.LimitedReader{R: src, N: math.MaxInt64}
+	}
+	var total int64
+	for lr.N > 0 {
+		if m.s.state.gen.Load() != m.gen {
+			return total, errCut
+		}
+		seg := min(lr.N, readFromSegment)
+		n, err := rf.ReadFrom(&io.LimitedReader{R: lr.R, N: seg})
+		lr.N -= n
+		total += n
+		m.s.state.addTraffic(m.id, 0, n)
+		if err != nil || n < seg { // n < seg: end of src
+			return total, err
+		}
+	}
+	return total, nil
+}
 
 // meteredBody counts upload traffic and fails once connections are cut.
 type meteredBody struct {

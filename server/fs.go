@@ -153,6 +153,7 @@ type Entry struct {
 
 func (s *Server) handleTree(w http.ResponseWriter, r *http.Request) {
 	entries := []Entry{}
+	readOnly := s.state.readOnlyMatcher()
 	err := filepath.WalkDir(s.root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // skip unreadable entries
@@ -177,7 +178,7 @@ func (s *Server) handleTree(w http.ResponseWriter, r *http.Request) {
 		if !info.IsDir() && !info.Mode().IsRegular() {
 			return nil // skip symlinks, devices, ...
 		}
-		e := Entry{Path: rel, IsDir: info.IsDir(), Mtime: info.ModTime().UnixMilli(), ReadOnly: s.state.isReadOnly(rel)}
+		e := Entry{Path: rel, IsDir: info.IsDir(), Mtime: info.ModTime().UnixMilli(), ReadOnly: readOnly(rel)}
 		if !e.IsDir {
 			e.Size = info.Size()
 		}
@@ -188,7 +189,7 @@ func (s *Server) handleTree(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, entries)
+	writeJSONGzip(w, r, entries)
 }
 
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {

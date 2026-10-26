@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -171,5 +173,57 @@ func TestTOTPCannotBeReenrolledWhileEnabled(t *testing.T) {
 	status(t, a.do("POST", "/admin/api/totp/enable", `{"code":"123456"}`), http.StatusConflict)
 	if s.state.totpSecret() != setup.Secret {
 		t.Fatal("secret replaced")
+	}
+}
+
+// rfRecorder is a ResponseWriter whose ReadFrom records what it is handed, like the sendfile path.
+type rfRecorder struct {
+	httptest.ResponseRecorder
+	srcs  []io.Reader
+	onSeg func()
+}
+
+func (r *rfRecorder) ReadFrom(src io.Reader) (int64, error) {
+	if lr, ok := src.(*io.LimitedReader); ok {
+		r.srcs = append(r.srcs, lr.R)
+	}
+	n, err := io.Copy(&r.ResponseRecorder, src)
+	if r.onSeg != nil {
+		r.onSeg()
+	}
+	return n, err
+}
+
+func TestMeteredWriterReadFrom(t *testing.T) {
+	s, _ := newTestServer(t)
+	id := s.state.touch(testDevice, "127.0.0.1")
+	const size = readFromSegment*2 + 123
+	file := bytes.NewReader(make([]byte, size+1000))
+	rec := &rfRecorder{ResponseRecorder: *httptest.NewRecorder()}
+	mw := &meteredWriter{ResponseWriter: rec, s: s, id: id, gen: s.state.gen.Load()}
+
+	// As http.ServeContent does: io.CopyN wraps the file in a LimitedReader.
+	n, err := io.CopyN(mw, file, size)
+	if err != nil || n != size || rec.Body.Len() != size {
+		t.Fatalf("copied %d (body %d), err %v", n, rec.Body.Len(), err)
+	}
+	if len(rec.srcs) != 3 {
+		t.Fatalf("segments = %d, want 3", len(rec.srcs))
+	}
+	for _, src := range rec.srcs {
+		if src != file { // a second LimitedReader in between would defeat sendfile
+			t.Fatalf("segment reads from %T, want the file itself", src)
+		}
+	}
+	if d := deviceStatus(t, s, testDevice); d.BytesDown != size {
+		t.Fatalf("metered %d, want %d", d.BytesDown, size)
+	}
+
+	// A cut between segments ends the copy.
+	rec = &rfRecorder{ResponseRecorder: *httptest.NewRecorder(), onSeg: func() { s.state.gen.Add(1) }}
+	mw = &meteredWriter{ResponseWriter: rec, s: s, id: id, gen: s.state.gen.Load()}
+	file.Seek(0, io.SeekStart)
+	if n, err := io.CopyN(mw, file, size); err != errCut || n != readFromSegment {
+		t.Fatalf("after cut: copied %d, err %v", n, err)
 	}
 }

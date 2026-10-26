@@ -19,6 +19,10 @@ const (
 	maxChunkSize     = 64 << 20
 )
 
+// chunkBufs holds copy buffers for chunk bodies: fewer, larger reads and writes than io.Copy's
+// 32 KB, so fewer WriteAt calls and traffic-meter locks per chunk, without a new buffer each time.
+var chunkBufs = sync.Pool{New: func() any { b := make([]byte, 1<<20); return &b }}
+
 type uploadSession struct {
 	id       string
 	rel      string // target path relative to root
@@ -156,7 +160,9 @@ func (s *Server) handleUploadChunk(w http.ResponseWriter, r *http.Request) {
 	}
 	body := http.MaxBytesReader(w, r.Body, maxLen)
 	// Write directly at offset; chunks may arrive in parallel and out of order.
-	n, err := io.Copy(&offsetWriter{f: sess.file, off: offset}, body)
+	buf := chunkBufs.Get().(*[]byte)
+	n, err := io.CopyBuffer(&offsetWriter{f: sess.file, off: offset}, body, *buf)
+	chunkBufs.Put(buf)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

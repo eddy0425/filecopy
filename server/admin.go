@@ -249,12 +249,29 @@ type diskStatus struct {
 	Total uint64 `json:"total"`
 }
 
+// diskStatus returns the cached usage. Once it is stale it is measured again in the background:
+// walking a large tree must not hold up the panel's status polls. Free and total are cheap (statfs).
 func (s *Server) diskStatus() diskStatus {
 	s.diskMu.Lock()
-	defer s.diskMu.Unlock()
-	if s.now().Before(s.diskAt.Add(diskCacheTTL)) {
-		return s.disk
+	if s.diskAt.IsZero() { // first call: nothing to show yet
+		s.disk, s.diskAt = s.measureDisk(), s.now()
+	} else if !s.diskBusy && !s.now().Before(s.diskAt.Add(diskCacheTTL)) {
+		s.diskBusy = true
+		go func() {
+			ds := s.measureDisk()
+			s.diskMu.Lock()
+			s.disk, s.diskAt, s.diskBusy = ds, s.now(), false
+			s.diskMu.Unlock()
+		}()
 	}
+	ds := s.disk
+	s.diskMu.Unlock()
+	ds.Free, ds.Total, _ = diskSpace(s.root)
+	return ds
+}
+
+// measureDisk walks the data and the recycle bin.
+func (s *Server) measureDisk() diskStatus {
 	var used int64
 	filepath.WalkDir(s.root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -270,10 +287,7 @@ func (s *Server) diskStatus() diskStatus {
 		}
 		return nil
 	})
-	ds := diskStatus{Used: used, Trash: s.trash.usage()}
-	ds.Free, ds.Total, _ = diskSpace(s.root)
-	s.disk, s.diskAt = ds, s.now()
-	return ds
+	return diskStatus{Used: used, Trash: s.trash.usage()}
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request, _ adminCtx) {

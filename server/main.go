@@ -3,12 +3,15 @@
 package main
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"flag"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -41,9 +44,10 @@ type Server struct {
 
 	restoreMu sync.Mutex // trash restores: picking a free name and moving there is one step
 
-	diskMu sync.Mutex
-	disk   diskStatus
-	diskAt time.Time
+	diskMu   sync.Mutex
+	disk     diskStatus // used and trash; free and total are read on each call
+	diskAt   time.Time
+	diskBusy bool // a background measurement is running
 }
 
 func NewServer(dataDir, token string) (*Server, error) {
@@ -146,12 +150,57 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// writeJSONGzip is writeJSON for large responses (the tree, ~10x smaller) when the client accepts gzip.
+func writeJSONGzip(w http.ResponseWriter, r *http.Request, v any) {
+	w.Header().Add("Vary", "Accept-Encoding")
+	if !acceptsGzip(r) {
+		writeJSON(w, v)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Encoding", "gzip")
+	gz, _ := gzip.NewWriterLevel(w, gzip.BestSpeed)
+	_ = json.NewEncoder(gz).Encode(v)
+	_ = gz.Close()
+}
+
+func acceptsGzip(r *http.Request) bool {
+	for _, part := range strings.Split(r.Header.Get("Accept-Encoding"), ",") {
+		coding, params, _ := strings.Cut(part, ";")
+		if !strings.EqualFold(strings.TrimSpace(coding), "gzip") {
+			continue
+		}
+		k, v, ok := strings.Cut(strings.TrimSpace(params), "=")
+		if !ok || !strings.EqualFold(strings.TrimSpace(k), "q") {
+			return true
+		}
+		q, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		return err != nil || q > 0
+	}
+	return false
+}
+
 func logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		next.ServeHTTP(w, r)
-		if r.Method != http.MethodPut { // chunk PUTs are too noisy
+		if worthLogging(r) {
 			log.Printf("%s %s %s (%v)", r.RemoteAddr, r.Method, r.URL.RequestURI(), time.Since(start).Round(time.Millisecond))
 		}
 	})
+}
+
+// worthLogging leaves out the noise: chunk uploads, the panel's and clients' polling, and download
+// chunks after the first, so each download is still logged once (who fetched what).
+func worthLogging(r *http.Request) bool {
+	switch {
+	case r.Method == http.MethodPut:
+		return false
+	case r.URL.Path == "/api/ping" || r.URL.Path == "/admin/api/status":
+		return false
+	case r.Method == http.MethodGet && (r.URL.Path == "/api/file" || r.URL.Path == "/admin/api/fs/file"):
+		rng := r.Header.Get("Range")
+		return rng == "" || strings.HasPrefix(rng, "bytes=0-")
+	}
+	return true
 }
