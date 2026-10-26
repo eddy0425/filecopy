@@ -111,6 +111,7 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /admin/api/trash/empty", s.adminOnly(s.handleTrashEmpty))
 	mux.Handle("POST /admin/api/readonly", s.adminOnly(s.handleReadOnly))
 	mux.Handle("POST /admin/api/fs/copy", s.adminFS(s.handleCopy))
+	mux.Handle("GET /admin/api/fs/zip", s.adminFS(s.handleZip))
 	s.registerFileRoutes(mux, "/admin/api/fs", s.adminFS)
 }
 

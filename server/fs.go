@@ -151,14 +151,14 @@ type Entry struct {
 	ReadOnly bool   `json:"readOnly,omitempty"`
 }
 
-func (s *Server) handleTree(w http.ResponseWriter, r *http.Request) {
-	entries := []Entry{}
-	readOnly := s.state.readOnlyMatcher()
-	err := filepath.WalkDir(s.root, func(p string, d fs.DirEntry, err error) error {
+// walkData calls fn for the folders and regular files below dir (the data dir or a folder in it) that
+// the file API can address, with their paths relative to the data dir.
+func (s *Server) walkData(dir string, fn func(rel string, info fs.FileInfo) error) error {
+	return filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // skip unreadable entries
 		}
-		if p == s.root {
+		if p == dir {
 			return nil
 		}
 		rel := filepath.ToSlash(strings.TrimPrefix(p, s.root+string(filepath.Separator)))
@@ -178,6 +178,14 @@ func (s *Server) handleTree(w http.ResponseWriter, r *http.Request) {
 		if !info.IsDir() && !info.Mode().IsRegular() {
 			return nil // skip symlinks, devices, ...
 		}
+		return fn(rel, info)
+	})
+}
+
+func (s *Server) handleTree(w http.ResponseWriter, r *http.Request) {
+	entries := []Entry{}
+	readOnly := s.state.readOnlyMatcher()
+	err := s.walkData(s.root, func(rel string, info fs.FileInfo) error {
 		e := Entry{Path: rel, IsDir: info.IsDir(), Mtime: info.ModTime().UnixMilli(), ReadOnly: readOnly(rel)}
 		if !e.IsDir {
 			e.Size = info.Size()

@@ -2,233 +2,435 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FileCopy 控制面板</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%232563eb'/%3E%3Cpath d='M6 8.3c0-.7.5-1.3 1.2-1.3h3l1.3 1.6h5.3c.7 0 1.2.5 1.2 1.2v6c0 .7-.5 1.2-1.2 1.2H7.2C6.5 17 6 16.5 6 15.8z' fill='none' stroke='white' stroke-width='1.6' stroke-linejoin='round'/%3E%3C/svg%3E">
 <style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fff; --side: #f6f7f9; --line: #e4e7eb; --line2: #eef0f3; --text: #1f2328; --muted: #6b7280;
+    --hover: #f3f4f6; --sel: #eaf1fe; --primary: #2563eb; --primary-h: #1d4ed8; --primary-soft: #eaf1fe;
+    --danger: #dc2626; --danger-soft: #fdecec; --ok: #16a34a; --ok-soft: #e7f6ec; --warn: #9a6200; --warn-soft: #fef6e4;
+    --folder: #5b8def; --shadow: 0 8px 28px rgba(0, 0, 0, .14); --overlay: rgba(0, 0, 0, .32);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181d; --side: #1b1e24; --line: #2c3038; --line2: #23272e; --text: #e6e8eb; --muted: #9aa1ab;
+      --hover: #22262d; --sel: #1d2a42; --primary: #4f8cff; --primary-h: #6b9dff; --primary-soft: #1d2a42;
+      --danger: #f05252; --danger-soft: #3a1f22; --ok: #3fb868; --ok-soft: #1b3326; --warn: #e3b341; --warn-soft: #3a3020;
+      --folder: #5b8def; --shadow: 0 8px 28px rgba(0, 0, 0, .5); --overlay: rgba(0, 0, 0, .55);
+    }
+  }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 14px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif; color: #1f2328; background: #f5f6f8; }
-  button { font: inherit; padding: 4px 12px; border: 1px solid #c8ccd1; border-radius: 4px; background: #fff; cursor: pointer; }
-  button:hover:not(:disabled) { background: #eef3fb; border-color: #7aa7e0; }
-  button:disabled { opacity: .5; cursor: default; }
-  button.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
-  button.primary:hover:not(:disabled) { background: #1a5fcc; }
-  button.danger { color: #c62828; }
-  button.link { border: 0; background: none; color: #1f6feb; padding: 0 4px; }
-  input[type=text], input[type=password] { font: inherit; padding: 5px 8px; border: 1px solid #c8ccd1; border-radius: 4px; }
+  body { margin: 0; font: 14px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; color: var(--text); background: var(--bg); }
+  a { color: inherit; text-decoration: none; }
   .hidden { display: none !important; }
-  .muted { color: #6e7781; }
-  .error { color: #c62828; min-height: 1.5em; }
-  .warn { background: #fff4e5; border-bottom: 1px solid #f0c36d; padding: 6px 20px; color: #8a5300; }
+  .muted { color: var(--muted); }
+  .sm { font-size: 12.5px; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .error { color: var(--danger); min-height: 1.5em; font-size: 13px; }
+  code { background: var(--hover); padding: 2px 6px; border-radius: 4px; word-break: break-all; }
 
-  #login { max-width: 340px; margin: 12vh auto; background: #fff; padding: 28px; border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,.08); }
-  #login h1 { font-size: 20px; margin: 0 0 18px; }
-  #login label { display: block; margin: 10px 0 4px; }
-  #login input { width: 100%; }
-  #login button { width: 100%; margin-top: 16px; padding: 7px; }
+  .ico { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .ico.dir { width: 22px; height: 22px; fill: var(--folder); stroke: none; }
+  .ico.doc { width: 22px; height: 22px; color: var(--muted); stroke-width: 1.5; }
 
-  header { display: flex; align-items: center; gap: 24px; background: #fff; border-bottom: 1px solid #dde1e5; padding: 0 20px; height: 52px; }
-  header h1 { font-size: 17px; margin: 0; }
-  nav { display: flex; gap: 4px; flex: 1; }
-  nav button { border: 0; border-radius: 0; background: none; padding: 14px 14px 12px; border-bottom: 2px solid transparent; }
-  nav button.active { border-bottom-color: #1f6feb; color: #1f6feb; }
-  main { padding: 20px; max-width: 1400px; }
-  section.card { background: #fff; border: 1px solid #dde1e5; border-radius: 8px; padding: 16px 18px; margin-bottom: 16px; }
-  section.card h2 { font-size: 15px; margin: 0 0 12px; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px;
+         background: var(--bg); color: var(--text); font: inherit; cursor: pointer; white-space: nowrap; }
+  .btn:hover:not(:disabled) { background: var(--hover); }
+  .btn:disabled { opacity: .45; cursor: default; }
+  .btn:focus-visible, .nav:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--primary-soft), 0 0 0 1px var(--primary); }
+  .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+  .btn.primary:hover:not(:disabled) { background: var(--primary-h); }
+  .btn.danger { color: var(--danger); }
+  .btn.danger-fill { background: var(--danger); border-color: var(--danger); color: #fff; }
+  .btn.ghost { border-color: transparent; background: transparent; }
+  .btn.ghost:hover:not(:disabled) { background: var(--hover); }
+  .btn.icon-btn { width: 32px; padding: 0; justify-content: center; }
+  .btn.small { height: 28px; padding: 0 10px; font-size: 13px; }
+  .btn.block { width: 100%; justify-content: center; height: 36px; }
+  input[type=text], input[type=password] { font: inherit; height: 34px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px;
+         background: var(--bg); color: var(--text); width: 320px; max-width: 100%; }
+  input[type=text]:focus, input[type=password]:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+  input[type=checkbox] { width: 15px; height: 15px; margin: 0; accent-color: var(--primary); cursor: pointer; }
 
-  table { border-collapse: collapse; width: 100%; }
-  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #eef0f2; white-space: nowrap; }
-  th { font-weight: 600; color: #57606a; background: #fafbfc; }
-  td.num, th.num { text-align: right; }
-  tr.sel td { background: #e5efff; }
-  tbody tr:hover td { background: #f3f7fd; }
-  tbody tr.sel:hover td { background: #dbe8fd; }
-  tr.conflict td { background: #fdecec; }
+  /* login */
+  #login { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--side); padding: 16px; }
+  .login-card { width: 360px; max-width: 100%; background: var(--bg); border: 1px solid var(--line); border-radius: 14px; padding: 28px; }
+  .login-card input { width: 100%; }
+  .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+  .field > span { font-size: 13px; color: var(--muted); }
 
-  .stats { display: flex; gap: 16px; flex-wrap: wrap; }
-  .stat { background: #fff; border: 1px solid #dde1e5; border-radius: 8px; padding: 12px 18px; min-width: 170px; }
-  .stat .v { font-size: 20px; font-weight: 600; }
-  .bar { height: 6px; background: #eef0f2; border-radius: 3px; margin-top: 6px; overflow: hidden; }
-  .bar div { height: 100%; background: #1f6feb; }
+  /* layout */
+  #app { display: flex; min-height: 100vh; }
+  aside { width: 200px; flex: none; background: var(--side); border-right: 1px solid var(--line); display: flex; flex-direction: column;
+          position: sticky; top: 0; height: 100vh; padding: 16px 10px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 16px; padding: 0 10px 18px; }
+  .logo { width: 28px; height: 28px; border-radius: 8px; background: var(--primary); color: #fff; display: inline-flex; align-items: center; justify-content: center; }
+  .logo .ico { width: 17px; height: 17px; }
+  .nav { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 10px; margin-bottom: 2px; border: 0; border-radius: 8px;
+         background: none; color: var(--text); font: inherit; width: 100%; cursor: pointer; position: relative; }
+  .nav:hover { background: var(--hover); }
+  .nav.active { background: var(--primary-soft); color: var(--primary); font-weight: 600; }
+  .nav.active::before { content: ""; position: absolute; left: -10px; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: var(--primary); }
+  .side-foot { margin-top: auto; }
+  .disk { padding: 0 10px 12px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .bar { height: 4px; background: var(--line); border-radius: 2px; margin-top: 6px; overflow: hidden; }
+  .bar > div { height: 100%; width: 0; background: var(--primary); transition: width .3s; }
+  .bar > div.full { background: var(--danger); }
+  main { flex: 1; min-width: 0; }
+  .warn { display: flex; align-items: center; gap: 8px; background: var(--warn-soft); color: var(--warn); padding: 6px 12px 6px 28px; font-size: 13px; }
+  .warn span { flex: 1; }
+  .page { max-width: 1200px; margin: 0 auto; padding: 22px 28px 48px; }
+  .head { display: flex; align-items: center; gap: 8px; min-height: 40px; margin-bottom: 14px; flex-wrap: wrap; }
+  .head h1 { font-size: 19px; font-weight: 600; margin: 0; flex: 1; }
+  .selbar { background: var(--primary-soft); border-radius: 10px; padding: 4px 6px; }
+  .selbar .count { flex: 1; font-weight: 600; color: var(--primary); }
+  .crumbs { flex: 1; display: flex; align-items: center; gap: 2px; min-width: 0; flex-wrap: wrap; font-size: 16px; }
+  .crumbs a { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 6px; }
+  .crumbs a:hover { background: var(--hover); }
+  .crumbs a:last-of-type { font-weight: 600; }
+  .crumbs .sep { color: var(--muted); }
 
-  .switch { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; }
+  /* cards, stats */
+  .card { border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; margin-bottom: 16px; }
+  .card.flush { padding: 0; overflow: hidden; }
+  .card.bad { border-color: var(--danger); background: var(--danger-soft); }
+  .card h2 { font-size: 15px; font-weight: 600; margin: 0 0 4px; }
+  .card .desc { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+  .card-head { display: flex; align-items: center; gap: 8px; padding: 14px 20px; }
+  .card-head h2 { flex: 1; margin: 0; }
+  .card .foot { padding: 10px 20px; margin: 0; font-size: 12.5px; border-top: 1px solid var(--line2); }
+  .row-between { display: flex; align-items: center; gap: 16px; justify-content: space-between; flex-wrap: wrap; }
+  .row-between .desc { margin: 0; }
+  .stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .stat { border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; }
+  .stat .k { color: var(--muted); font-size: 12.5px; }
+  .stat .v { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .switch { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; font-weight: 600; }
   .switch input { display: none; }
-  .switch .track { width: 44px; height: 24px; border-radius: 12px; background: #c62828; position: relative; transition: .2s; }
+  .switch .track { width: 44px; height: 24px; border-radius: 12px; background: var(--danger); position: relative; transition: .2s; flex: none; }
   .switch .track::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: .2s; }
-  .switch input:checked + .track { background: #2e9d48; }
+  .switch input:checked + .track { background: var(--ok); }
   .switch input:checked + .track::after { left: 23px; }
+  .switch.pending { visibility: hidden; } /* until the first status: no red "off" flash */
+  .switch.pending .track, .switch.pending .track::after { transition: none; }
+  .card.bad .switch { color: var(--danger); }
 
-  .badge { display: inline-block; padding: 0 7px; border-radius: 9px; font-size: 12px; line-height: 18px; margin-right: 4px; }
-  .badge.on { background: #dcf3e1; color: #1a7f37; }
-  .badge.off { background: #eef0f2; color: #6e7781; }
-  .badge.bad { background: #c62828; color: #fff; }
-  .badge.pend { background: #fff4e5; color: #8a5300; }
+  /* lists */
+  .scroll { overflow-x: auto; }
+  table.list { width: 100%; border-collapse: separate; border-spacing: 0; }
+  table.fixed { table-layout: fixed; }
+  .list th { font-weight: 500; font-size: 12.5px; color: var(--muted); text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line);
+             white-space: nowrap; user-select: none; }
+  .list th.num { text-align: right; }
+  .list th[data-sort] { cursor: pointer; }
+  .list th[data-sort]:hover { color: var(--text); }
+  .list th[data-dir=asc]::after { content: " ↑"; }
+  .list th[data-dir=desc]::after { content: " ↓"; }
+  .list td { padding: 0 10px; height: 44px; border-bottom: 1px solid var(--line2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .list tbody tr:hover td { background: var(--hover); }
+  .list tbody tr.sel td { background: var(--sel); }
+  .list tr.conflict td { background: var(--danger-soft); }
+  .list .ck { width: 40px; text-align: center; }
+  .list td.ck input, .list th.ck input { opacity: 0; transition: opacity .1s; }
+  .list tr:hover td.ck input, .list tr.sel td.ck input, .list.selecting .ck input, .list thead:hover th.ck input { opacity: 1; }
+  .list .act { width: 48px; text-align: right; padding-right: 6px; }
+  .list .act2 { text-align: right; }
+  .list .act2 .btn + .btn { margin-left: 6px; }
+  .card .list th:first-child, .card .list td:first-child { padding-left: 20px; }
+  .card .list th:last-child, .card .list td:last-child { padding-right: 14px; }
+  .nm { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .nm > span:last-child, .nm > a { overflow: hidden; text-overflow: ellipsis; }
+  .nm a:hover { color: var(--primary); text-decoration: underline; }
+  .two { display: flex; flex-direction: column; line-height: 1.3; min-width: 0; }
+  .two small { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+  .fi { position: relative; display: inline-flex; flex: none; }
+  .fi .lockbadge { position: absolute; right: -4px; bottom: -3px; width: 13px; height: 13px; padding: 1px; border-radius: 50%;
+                   background: var(--bg); color: var(--warn); stroke-width: 2.4; }
+  .summary { padding: 10px 10px 0; font-size: 12.5px; }
+  .empty { text-align: center; padding: 64px 16px; color: var(--muted); }
+  .empty .ico { width: 56px; height: 56px; margin-bottom: 8px; }
+  .empty .ico.dir { opacity: .35; }
+  .empty div:nth-child(2) { color: var(--text); font-size: 15px; font-weight: 600; }
+  .note { margin: 16px 10px 0; font-size: 12.5px; display: flex; align-items: center; gap: 6px; }
+  .note .ico { width: 14px; height: 14px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 8px; vertical-align: 1px; }
+  .dot.on { background: var(--ok); }
+  .badge { display: inline-flex; align-items: center; gap: 3px; padding: 0 7px; border-radius: 9px; font-size: 12px; line-height: 18px; margin-left: 6px; font-weight: 500; }
+  .badge .ico { width: 12px; height: 12px; }
+  .badge.on { background: var(--ok-soft); color: var(--ok); margin-left: 0; }
+  .badge.bad { background: var(--danger); color: #fff; }
+  .badge.pend { background: var(--warn-soft); color: var(--warn); }
 
-  .toolbar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
-  .toolbar .sep { width: 1px; height: 22px; background: #dde1e5; margin: 0 4px; }
-  .crumbs { margin-bottom: 10px; }
-  .crumbs button { border: 0; background: none; padding: 2px 4px; color: #1f6feb; }
-  .crumbs span { color: #8c959f; }
-  #fileTable td.name { cursor: default; }
-  #fileTable td.name .ico { display: inline-block; width: 20px; }
-  #drop { border: 2px dashed transparent; border-radius: 8px; }
-  #drop.over { border-color: #1f6feb; background: #f0f6ff; }
-  #uploads div { font-size: 13px; padding: 2px 0; }
+  /* security */
+  .steps { margin-top: 18px; }
+  .step { display: flex; gap: 12px; margin-bottom: 14px; }
+  .step p { margin: 2px 0 10px; }
+  .step-n { width: 22px; height: 22px; border-radius: 50%; background: var(--primary-soft); color: var(--primary); font-size: 12.5px; font-weight: 600;
+            display: inline-flex; align-items: center; justify-content: center; flex: none; margin-top: 1px; }
+  .inline { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .inline input { width: 180px; }
+  #qr { display: inline-block; padding: 8px; background: #fff; border: 1px solid var(--line); border-radius: 10px; line-height: 0; }
+  #qr svg { width: 180px; height: 180px; }
 
-  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.3); display: flex; align-items: center; justify-content: center; z-index: 10; }
-  .modal .box { background: #fff; border-radius: 8px; padding: 18px 20px; width: 460px; max-height: 80vh; display: flex; flex-direction: column; }
-  .modal h3 { margin: 0 0 10px; font-size: 15px; }
-  .modal .list { overflow: auto; border: 1px solid #dde1e5; border-radius: 4px; flex: 1; min-height: 200px; }
-  .modal .list div { padding: 3px 8px; cursor: pointer; white-space: nowrap; }
-  .modal .list div:hover { background: #f3f7fd; }
-  .modal .list div.sel { background: #e5efff; }
-  .modal .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+  /* overlays */
+  .modal { position: fixed; inset: 0; background: var(--overlay); display: flex; align-items: center; justify-content: center; z-index: 40; padding: 16px; }
+  .box { background: var(--bg); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); width: 440px; max-width: 100%;
+         padding: 20px 22px; max-height: 80vh; display: flex; flex-direction: column; }
+  .box h3 { margin: 0 0 8px; font-size: 16px; font-weight: 600; }
+  .box p { margin: 0 0 12px; color: var(--muted); white-space: pre-wrap; word-break: break-word; }
+  .box input { width: 100%; }
+  .box .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+  .tree { overflow: auto; border: 1px solid var(--line); border-radius: 8px; flex: 1; min-height: 220px; padding: 4px; }
+  .tree div { display: flex; align-items: center; gap: 8px; height: 32px; padding-right: 8px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
+  .tree div .ico.dir { width: 18px; height: 18px; }
+  .tree div:hover { background: var(--hover); }
+  .tree div.sel { background: var(--sel); color: var(--primary); }
+  .menu { position: fixed; min-width: 180px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 4px; z-index: 30; }
+  .menu button { display: flex; align-items: center; gap: 10px; width: 100%; border: 0; background: none; color: var(--text); font: inherit;
+                 padding: 7px 10px; border-radius: 6px; text-align: left; cursor: pointer; }
+  .menu button:hover:not(:disabled) { background: var(--hover); }
+  .menu button:disabled { opacity: .45; cursor: default; }
+  .menu button.danger { color: var(--danger); }
+  .menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+  #toasts { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 8px; z-index: 50;
+            align-items: center; pointer-events: none; }
+  .toast { background: var(--text); color: var(--bg); padding: 9px 14px; border-radius: 8px; box-shadow: var(--shadow); max-width: 380px; word-break: break-word; }
+  .toast.err { background: var(--danger); color: #fff; }
+  .uploads { position: fixed; right: 16px; bottom: 16px; width: 340px; max-width: calc(100vw - 32px); max-height: 50vh; overflow: auto;
+             background: var(--bg); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); z-index: 20; }
+  .up-head { display: flex; align-items: center; padding: 8px 8px 8px 14px; border-bottom: 1px solid var(--line2); font-weight: 600; position: sticky; top: 0; background: var(--bg); }
+  .up-head span { flex: 1; }
+  .up-row { padding: 8px 14px; border-bottom: 1px solid var(--line2); font-size: 13px; }
+  .up-row .top { display: flex; gap: 8px; }
+  .up-row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .up-row .st { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .up-row.done .st { color: var(--ok); }
+  .up-row.failed .st { color: var(--danger); white-space: normal; }
+  .up-row.failed .bar > div { background: var(--danger); }
+  .dropzone { position: fixed; inset: 10px; border: 2px dashed var(--primary); border-radius: 14px; background: color-mix(in srgb, var(--primary-soft) 94%, transparent);
+              display: flex; flex-direction: column; gap: 10px; align-items: center; justify-content: center; font-size: 18px; font-weight: 600;
+              color: var(--primary); z-index: 35; pointer-events: none; }
+  .dropzone .ico { width: 40px; height: 40px; }
 
-  .form-row { margin: 8px 0; }
-  .form-row label { display: inline-block; width: 90px; }
-  #qr svg { width: 200px; height: 200px; }
-  code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; word-break: break-all; }
+  @media (max-width: 760px) {
+    aside { width: 56px; padding: 16px 8px; }
+    .brand { padding: 0 2px 18px; justify-content: center; }
+    .brand span:last-child, .nav span, .disk { display: none; }
+    .nav { justify-content: center; padding: 0; }
+    .nav.active::before { left: -8px; }
+    .page { padding: 16px 14px 40px; }
+    .stats { grid-template-columns: 1fr; }
+    .hide-sm { display: none; }
+  }
 </style>
 </head>
 <body>
 
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/></symbol>
+  <symbol id="i-dir" viewBox="0 0 24 24"><path d="M2.5 6.3A1.8 1.8 0 0 1 4.3 4.5h4.4c.5 0 1 .2 1.3.6l1.4 1.7h8.3a1.8 1.8 0 0 1 1.8 1.8v10.1a1.8 1.8 0 0 1-1.8 1.8H4.3a1.8 1.8 0 0 1-1.8-1.8z"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H6.5A1.5 1.5 0 0 0 5 4.5v15A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5V8zM14 3v5h5"/></symbol>
+  <symbol id="i-text" viewBox="0 0 24 24"><path d="M14 3H6.5A1.5 1.5 0 0 0 5 4.5v15A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5V8zM14 3v5h5M8.5 13h7M8.5 16.5h5"/></symbol>
+  <symbol id="i-archive" viewBox="0 0 24 24"><path d="M14 3H6.5A1.5 1.5 0 0 0 5 4.5v15A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5V8zM14 3v5h5M10 5h1.5M10 8h1.5M10 11h1.5M9.5 14h2.5v3.5H9.5z"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="1.5"/><circle cx="9" cy="10" r="1.5"/><path d="M20.5 16l-5-5L7 19.5"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12.5A1.5 1.5 0 0 0 8.5 21h7a1.5 1.5 0 0 0 1.5-1.5L18 7M9 7V4.5A1.5 1.5 0 0 1 10.5 3h3A1.5 1.5 0 0 1 15 4.5V7"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l7.5 3v5.5c0 4.5-3.2 8.3-7.5 9.5-4.3-1.2-7.5-5-7.5-9.5V6z"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M15 4h3.5A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5H15M10 8l-4 4 4 4M6 12h10"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v12M7 11l5 5 5-5M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.5-4.5M4 4v3.5h3.5M4 13a8 8 0 0 0 14.5 4.5M20 20v-3.5h-3.5"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5.5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="18.5" cy="12" r="1.2"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="1.5"/><path d="M8 10.5v-3a4 4 0 0 1 8 0v3"/></symbol>
+  <symbol id="i-unlock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="1.5"/><path d="M8 10.5v-3a4 4 0 0 1 7.6-1.7"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M4 11l8-7 8 7M6 9.5V20h12V9.5"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="1.5"/><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"/></symbol>
+  <symbol id="i-move" viewBox="0 0 24 24"><path d="M4 12h15M15 8l4 4-4 4"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></symbol>
+  <symbol id="i-restore" viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.4-5.7M4 4v4h4"/></symbol>
+  <symbol id="i-reset" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.4-5.7M20 4v4h-4"/></symbol>
+</svg>
+
 <div id="login" class="hidden">
-  <h1>FileCopy 控制面板</h1>
-  <form id="loginForm">
-    <label for="pw">管理密码</label>
-    <input type="password" id="pw" autocomplete="current-password" autofocus>
-    <div id="codeRow">
-      <label for="code">二步验证码</label>
-      <input type="text" id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 位数字">
-    </div>
-    <button class="primary" type="submit">登录</button>
+  <form id="loginForm" class="login-card">
+    <div class="brand" style="padding:0 0 4px"><span class="logo"><svg class="ico"><use href="#i-folder"/></svg></span><span>FileCopy</span></div>
+    <p class="muted" style="margin:0 0 22px">控制面板</p>
+    <label class="field"><span>管理密码</span><input type="password" id="pw" autocomplete="current-password" autofocus></label>
+    <label class="field" id="codeRow"><span>二步验证码</span><input type="text" id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 位数字"></label>
     <div class="error" id="loginError"></div>
+    <button class="btn primary block" type="submit">登录</button>
   </form>
 </div>
 
 <div id="app" class="hidden">
-  <div id="httpsWarn" class="warn hidden">当前通过 HTTP 访问，密码和验证码以明文传输。建议为服务器配置 HTTPS（例如用 Caddy 反向代理）。</div>
-  <header>
-    <h1>FileCopy 控制面板</h1>
-    <nav>
-      <button data-tab="conn" class="active">连接</button>
-      <button data-tab="files">文件</button>
-      <button data-tab="trash">回收站</button>
-      <button data-tab="security">安全</button>
-    </nav>
-    <button id="logout">退出登录</button>
-  </header>
+  <aside>
+    <div class="brand"><span class="logo"><svg class="ico"><use href="#i-folder"/></svg></span><span>FileCopy</span></div>
+    <a class="nav" data-tab="conn" href="#conn" title="连接"><svg class="ico"><use href="#i-activity"/></svg><span>连接</span></a>
+    <a class="nav" data-tab="files" href="#files" title="文件"><svg class="ico"><use href="#i-folder"/></svg><span>文件</span></a>
+    <a class="nav" data-tab="trash" href="#trash" title="回收站"><svg class="ico"><use href="#i-trash"/></svg><span>回收站</span></a>
+    <a class="nav" data-tab="security" href="#security" title="安全"><svg class="ico"><use href="#i-shield"/></svg><span>安全</span></a>
+    <div class="side-foot">
+      <div class="disk"><div id="sideDiskText">磁盘 -</div><div class="bar"><div id="sideDiskBar"></div></div></div>
+      <button class="nav" id="logout" title="退出登录"><svg class="ico"><use href="#i-logout"/></svg><span>退出登录</span></button>
+    </div>
+  </aside>
+
   <main>
-    <!-- 连接 -->
-    <div id="tab-conn">
-      <div class="stats" style="margin-bottom:16px">
-        <div class="stat"><div class="muted">数据占用</div><div class="v" id="diskUsed">-</div></div>
-        <div class="stat"><div class="muted">回收站占用</div><div class="v" id="diskTrash">-</div></div>
-        <div class="stat"><div class="muted">磁盘剩余 / 总量</div><div class="v" id="diskFree">-</div><div class="bar"><div id="diskBar" style="width:0"></div></div></div>
-      </div>
-      <section class="card">
-        <h2>客户端连接</h2>
-        <label class="switch"><input type="checkbox" id="accept"><span class="track"></span><span id="acceptText"></span></label>
-        <div class="muted" style="margin-top:6px">关闭后所有客户端请求被拒绝，正在进行的传输立即中断；控制面板不受影响。服务器重启后保持当前状态。</div>
-      </section>
-      <section class="card">
-        <div class="toolbar"><h2 style="margin:0;flex:1">设备</h2><button id="resetAll">全部重置流量</button></div>
-        <table>
-          <thead><tr><th>设备 ID</th><th>状态</th><th>IP</th><th>最后活动</th><th class="num">↑ 上传速度</th><th class="num">↓ 下载速度</th><th class="num">↑ 累计上传</th><th class="num">↓ 累计下载</th><th>统计起始</th><th></th></tr></thead>
-          <tbody id="devices"></tbody>
-        </table>
-        <div class="muted" style="margin-top:8px">点击设备 ID 可修改，客户端下次连接服务器时自动同步。同一设备 ID 同时从多个 IP 连接时标红。</div>
-      </section>
+    <div id="httpsWarn" class="warn hidden">
+      <span>当前通过 HTTP 访问，密码和验证码以明文传输。建议为服务器配置 HTTPS（例如用 Caddy 反向代理）。</span>
+      <button class="btn ghost icon-btn" id="warnClose" title="关闭"><svg class="ico"><use href="#i-x"/></svg></button>
     </div>
+    <div class="page">
 
-    <!-- 文件 -->
-    <div id="tab-files" class="hidden">
-      <section class="card" id="drop">
-        <div class="crumbs" id="crumbs"></div>
-        <div class="toolbar">
-          <button id="upFiles">⬆ 上传文件</button>
-          <button id="upFolder">⬆ 上传文件夹</button>
-          <button id="mkdir">＋ 新建文件夹</button>
-          <span class="sep"></span>
-          <button id="fDownload" data-sel>下载</button>
-          <button id="fRename" data-sel="1">重命名</button>
-          <button id="fCopy" data-sel>复制到…</button>
-          <button id="fMove" data-sel>移动到…</button>
-          <button id="fDelete" data-sel class="danger">删除</button>
-          <span class="sep"></span>
-          <button id="fReadOnly" data-sel>🔒 设为只读</button>
-          <button id="fWritable" data-sel>取消只读</button>
-          <span class="sep"></span>
-          <button id="fRefresh">⟳ 刷新</button>
-          <input type="file" id="fileInput" multiple class="hidden">
-          <input type="file" id="folderInput" webkitdirectory class="hidden">
+      <!-- 连接 -->
+      <section id="tab-conn" class="hidden">
+        <div class="head"><h1>连接</h1></div>
+        <div class="stats">
+          <div class="stat"><div class="k">数据占用</div><div class="v" id="diskUsed">-</div></div>
+          <div class="stat"><div class="k">回收站占用</div><div class="v" id="diskTrash">-</div></div>
+          <div class="stat"><div class="k">磁盘剩余 / 总量</div><div class="v" id="diskFree">-</div></div>
         </div>
-        <table id="fileTable">
-          <thead><tr><th style="width:28px"><input type="checkbox" id="selAll"></th><th>名称</th><th>修改日期</th><th class="num">大小</th></tr></thead>
-          <tbody id="files"></tbody>
-        </table>
-        <div class="muted" id="filesEmpty" style="padding:12px 10px">此文件夹为空。可以把文件或文件夹拖到这里上传。</div>
-        <div id="uploads"></div>
-        <div class="muted" style="margin-top:8px">🔒 只读文件夹：客户端只能下载，不能上传、新建、重命名或删除；控制面板不受限制。删除的项目进入回收站。</div>
-      </section>
-    </div>
-
-    <!-- 回收站 -->
-    <div id="tab-trash" class="hidden">
-      <section class="card">
-        <div class="toolbar"><h2 style="margin:0;flex:1">回收站</h2><span class="muted">删除超过 30 天的项目会被自动清理</span><button id="emptyTrash" class="danger">清空回收站</button></div>
-        <table>
-          <thead><tr><th>原位置</th><th>类型</th><th class="num">大小</th><th>删除时间</th><th>删除者</th><th></th></tr></thead>
-          <tbody id="trash"></tbody>
-        </table>
-        <div class="muted hidden" id="trashEmpty" style="padding:12px 10px">回收站是空的。</div>
-      </section>
-    </div>
-
-    <!-- 安全 -->
-    <div id="tab-security" class="hidden">
-      <section class="card">
-        <h2>二步认证（TOTP）</h2>
-        <div id="totpOff">
-          <p>未启用。启用后，登录控制面板需要输入验证器 App 中的 6 位验证码；客户端启动或关闭到托盘后再次打开也需要验证码。</p>
-          <button class="primary" id="totpSetup">启用二步认证</button>
-          <div id="totpSetupBox" class="hidden" style="margin-top:14px">
-            <p>1. 用 Google Authenticator、Microsoft Authenticator 等验证器 App 扫描二维码：</p>
-            <div id="qr"></div>
-            <p class="muted">无法扫码时可手动输入密钥：<code id="totpSecret"></code></p>
-            <p>2. 输入 App 显示的 6 位验证码确认：</p>
-            <input type="text" id="totpEnableCode" inputmode="numeric" maxlength="6" placeholder="6 位数字">
-            <button class="primary" id="totpEnable">确认启用</button>
+        <div class="card" id="connCard">
+          <div class="row-between">
+            <div><h2>客户端连接</h2><p class="desc">关闭后所有客户端请求被拒绝，正在进行的传输立即中断；控制面板不受影响。服务器重启后保持当前状态。</p></div>
+            <label class="switch pending" id="acceptSwitch"><input type="checkbox" id="accept"><span class="track"></span><span id="acceptText"></span></label>
           </div>
         </div>
-        <div id="totpOn" class="hidden">
-          <p><span class="badge on">已启用</span> 登录控制面板和解锁客户端需要验证码。</p>
-          <input type="text" id="totpDisableCode" inputmode="numeric" maxlength="6" placeholder="当前验证码">
-          <button class="danger" id="totpDisable">停用二步认证</button>
+        <div class="card flush">
+          <div class="card-head"><h2>设备</h2><button class="btn" id="resetAll"><svg class="ico"><use href="#i-reset"/></svg>全部重置流量</button></div>
+          <div class="scroll">
+            <table class="list">
+              <thead><tr><th>设备 ID</th><th>状态</th><th>IP</th><th>最后活动</th><th class="num">↑ 速度</th><th class="num">↓ 速度</th>
+                <th class="num">↑ 累计</th><th class="num">↓ 累计</th><th class="hide-sm">统计起始</th><th></th></tr></thead>
+              <tbody id="devices"></tbody>
+            </table>
+          </div>
+          <p class="foot muted">在“⋯”中可修改设备 ID，客户端下次连接服务器时自动同步。同一设备 ID 同时从多个 IP 连接时标红。</p>
         </div>
-        <div class="error" id="totpError"></div>
       </section>
-      <section class="card">
-        <h2>修改管理密码</h2>
-        <form id="pwForm">
-          <div class="form-row"><label>当前密码</label><input type="password" id="pwOld" autocomplete="current-password"></div>
-          <div class="form-row"><label>新密码</label><input type="password" id="pwNew" autocomplete="new-password" placeholder="至少 8 位"></div>
-          <div class="form-row"><label>确认新密码</label><input type="password" id="pwNew2" autocomplete="new-password"></div>
-          <div class="form-row" id="pwCodeRow"><label>验证码</label><input type="text" id="pwCode" inputmode="numeric" maxlength="6"></div>
-          <button class="primary" type="submit">修改密码</button>
-          <span class="muted">修改后其他已登录的会话将被退出。</span>
-          <div class="error" id="pwError"></div>
-        </form>
+
+      <!-- 文件 -->
+      <section id="tab-files" class="hidden">
+        <div class="head" id="filesHead">
+          <nav class="crumbs" id="crumbs"></nav>
+          <button class="btn primary" id="newBtn"><svg class="ico"><use href="#i-plus"/></svg>新建</button>
+          <button class="btn icon-btn" id="fRefresh" title="刷新"><svg class="ico"><use href="#i-refresh"/></svg></button>
+        </div>
+        <div class="head selbar hidden" id="filesSel">
+          <button class="btn ghost icon-btn" id="selClear" title="取消选择 (Esc)"><svg class="ico"><use href="#i-x"/></svg></button>
+          <span class="count" id="selCount"></span>
+          <button class="btn" id="fDownload"><svg class="ico"><use href="#i-download"/></svg>下载</button>
+          <button class="btn" id="fCopy"><svg class="ico"><use href="#i-copy"/></svg>复制到</button>
+          <button class="btn" id="fMove"><svg class="ico"><use href="#i-move"/></svg>移动到</button>
+          <button class="btn" id="fRename"><svg class="ico"><use href="#i-edit"/></svg>重命名</button>
+          <button class="btn" id="fReadOnly"><svg class="ico"><use href="#i-lock"/></svg>设为只读</button>
+          <button class="btn" id="fWritable"><svg class="ico"><use href="#i-unlock"/></svg>取消只读</button>
+          <button class="btn danger" id="fDelete"><svg class="ico"><use href="#i-trash"/></svg>删除</button>
+        </div>
+        <table class="list fixed" id="fileTable">
+          <thead><tr><th class="ck"><input type="checkbox" id="selAll" title="全选"></th><th data-sort="name">名称</th>
+            <th data-sort="size" class="num" style="width:110px">大小</th><th data-sort="mtime" class="hide-sm" style="width:140px">修改时间</th><th class="act"></th></tr></thead>
+          <tbody id="files"></tbody>
+        </table>
+        <div class="empty hidden" id="filesEmpty"><svg class="ico dir"><use href="#i-dir"/></svg><div>此文件夹为空</div><div>把文件或文件夹拖到这里即可上传</div></div>
+        <div class="summary muted" id="filesSummary"></div>
+        <p class="note muted"><svg class="ico"><use href="#i-lock"/></svg>只读文件夹：客户端只能下载，不能上传、新建、重命名或删除；控制面板不受限制。删除的项目进入回收站。</p>
+        <input type="file" id="fileInput" multiple class="hidden">
+        <input type="file" id="folderInput" webkitdirectory class="hidden">
       </section>
+
+      <!-- 回收站 -->
+      <section id="tab-trash" class="hidden">
+        <div class="head" id="trashHead">
+          <h1>回收站</h1><span class="muted sm">删除超过 30 天的项目会被自动清理</span>
+          <button class="btn danger" id="emptyTrash"><svg class="ico"><use href="#i-trash"/></svg>清空回收站</button>
+        </div>
+        <div class="head selbar hidden" id="trashSel">
+          <button class="btn ghost icon-btn" id="trashSelClear" title="取消选择 (Esc)"><svg class="ico"><use href="#i-x"/></svg></button>
+          <span class="count" id="trashSelCount"></span>
+          <button class="btn" id="tRestore"><svg class="ico"><use href="#i-restore"/></svg>还原</button>
+          <button class="btn danger" id="tDelete"><svg class="ico"><use href="#i-trash"/></svg>永久删除</button>
+        </div>
+        <table class="list fixed" id="trashTable">
+          <thead><tr><th class="ck"><input type="checkbox" id="trashAll" title="全选"></th><th>名称</th><th class="num" style="width:100px">大小</th>
+            <th class="hide-sm" style="width:120px">删除时间</th><th class="hide-sm" style="width:130px">删除者</th><th style="width:190px"></th></tr></thead>
+          <tbody id="trash"></tbody>
+        </table>
+        <div class="empty hidden" id="trashEmpty"><svg class="ico"><use href="#i-trash"/></svg><div>回收站是空的</div></div>
+      </section>
+
+      <!-- 安全 -->
+      <section id="tab-security" class="hidden">
+        <div class="head"><h1>安全</h1></div>
+        <div class="card">
+          <h2>二步认证（TOTP）</h2>
+          <div id="totpOff">
+            <p class="desc">未启用。启用后，登录控制面板需要输入验证器 App 中的 6 位验证码；客户端启动或关闭到托盘后再次打开也需要验证码。</p>
+            <button class="btn primary" id="totpSetup">启用二步认证</button>
+            <div id="totpSetupBox" class="hidden steps">
+              <div class="step"><span class="step-n">1</span><div>
+                <p>用 Google Authenticator、Microsoft Authenticator 等验证器 App 扫描二维码：</p>
+                <div id="qr"></div>
+                <p class="muted sm" style="margin-top:8px">无法扫码时可手动输入密钥：<code id="totpSecret"></code></p>
+              </div></div>
+              <div class="step"><span class="step-n">2</span><div>
+                <p>输入 App 显示的 6 位验证码确认：</p>
+                <div class="inline"><input type="text" id="totpEnableCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 位数字">
+                  <button class="btn primary" id="totpEnable">确认启用</button></div>
+              </div></div>
+            </div>
+          </div>
+          <div id="totpOn" class="hidden">
+            <p class="desc"><span class="badge on">已启用</span> 登录控制面板和解锁客户端需要验证码。</p>
+            <div class="inline"><input type="text" id="totpDisableCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="当前验证码">
+              <button class="btn danger" id="totpDisable">停用二步认证</button></div>
+          </div>
+          <div class="error" id="totpError" style="margin-top:8px"></div>
+        </div>
+        <div class="card">
+          <h2>修改管理密码</h2>
+          <p class="desc">修改后其他已登录的会话将被退出。</p>
+          <form id="pwForm">
+            <label class="field"><span>当前密码</span><input type="password" id="pwOld" autocomplete="current-password"></label>
+            <label class="field"><span>新密码</span><input type="password" id="pwNew" autocomplete="new-password" placeholder="至少 8 位"></label>
+            <label class="field"><span>确认新密码</span><input type="password" id="pwNew2" autocomplete="new-password"></label>
+            <label class="field" id="pwCodeRow"><span>验证码</span><input type="text" id="pwCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></label>
+            <div class="error" id="pwError"></div>
+            <button class="btn primary" type="submit">修改密码</button>
+          </form>
+        </div>
+      </section>
+
     </div>
   </main>
 </div>
 
-<div id="picker" class="modal hidden">
-  <div class="box">
-    <h3 id="pickerTitle">选择目标文件夹</h3>
-    <div class="list" id="pickerList"></div>
-    <div class="actions"><button id="pickerCancel">取消</button><button class="primary" id="pickerOk">确定</button></div>
+<div id="dlg" class="modal hidden">
+  <div class="box" role="dialog" aria-modal="true">
+    <h3 id="dlgTitle"></h3>
+    <p id="dlgMsg"></p>
+    <input type="text" id="dlgInput">
+    <div class="actions"><button class="btn" id="dlgCancel">取消</button><button class="btn primary" id="dlgOk">确定</button></div>
   </div>
 </div>
+<div id="picker" class="modal hidden">
+  <div class="box" role="dialog" aria-modal="true">
+    <h3 id="pickerTitle"></h3>
+    <div class="tree" id="pickerList"></div>
+    <div class="actions"><button class="btn" id="pickerCancel">取消</button><button class="btn primary" id="pickerOk">确定</button></div>
+  </div>
+</div>
+<div id="menu" class="menu hidden" role="menu"></div>
+<div id="toasts"></div>
+<div id="uploads" class="uploads hidden">
+  <div class="up-head"><span id="upTitle"></span><button class="btn ghost icon-btn" id="upClose" title="清除已结束的"><svg class="ico"><use href="#i-x"/></svg></button></div>
+  <div id="upList"></div>
+</div>
+<div id="dropzone" class="dropzone hidden"><svg class="ico"><use href="#i-upload"/></svg>松开即可上传到当前文件夹</div>
 
 <script>
 "use strict";
@@ -285,10 +487,11 @@ function fmtSize(n) {
 }
 function fmtRate(n) { return n > 0 ? fmtSize(n) + "/s" : "-"; }
 function pad(n) { return String(n).padStart(2, "0"); }
+function fmtDate(d) { return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())}`; }
 function fmtTime(ms) {
   if (!ms) return "-";
   const d = new Date(ms);
-  return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${fmtDate(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 function ago(ms, now) {
   const s = Math.max(0, Math.round((now - ms) / 1000));
@@ -297,10 +500,121 @@ function ago(ms, now) {
   if (s < 86400) return Math.floor(s / 3600) + " 小时前";
   return fmtTime(ms);
 }
+// Relative for recent items; the full time goes in the cell's title.
+function fmtRel(ms) {
+  if (!ms) return "-";
+  const s = (Date.now() - ms) / 1000;
+  if (s < 60) return "刚刚";
+  if (s < 3600) return Math.floor(s / 60) + " 分钟前";
+  if (s < 86400) return Math.floor(s / 3600) + " 小时前";
+  if (s < 7 * 86400) return Math.floor(s / 86400) + " 天前";
+  return fmtDate(new Date(ms));
+}
 function baseName(p) { return p.slice(p.lastIndexOf("/") + 1); }
 function parentOf(p) { const i = p.lastIndexOf("/"); return i < 0 ? "" : p.slice(0, i); }
 function join(dir, name) { return dir ? dir + "/" + name : name; }
-function fail(e) { alert(e.message || e); }
+const icon = (id, cls = "") => `<svg class="ico ${cls}"><use href="#i-${id}"/></svg>`;
+function fileIcon(path, isDir) {
+  if (isDir) return icon("dir", "dir");
+  const ext = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
+  if (["7z", "zip", "rar", "gz", "tgz", "tar", "xz", "bz2"].includes(ext)) return icon("archive", "doc");
+  if (["png", "jpg", "jpeg", "gif", "bmp", "webp", "svg"].includes(ext)) return icon("image", "doc");
+  if (["txt", "log", "md", "csv", "json", "xml", "ini", "cfg", "yaml", "yml"].includes(ext)) return icon("text", "doc");
+  return icon("file", "doc");
+}
+
+// ---------- dialogs, menus, toasts ----------
+
+let dialogOpen = false; // also keeps polling from re-rendering rows under it
+
+/** Shows a dialog; resolves to true (confirm), the entered text (input) or null (cancelled). */
+function dialog({ title, message = "", input = null, okText = "确定", danger = false }) {
+  return new Promise(resolve => {
+    const box = $("dlg"), inp = $("dlgInput"), ok = $("dlgOk");
+    $("dlgTitle").textContent = title;
+    $("dlgMsg").textContent = message;
+    $("dlgMsg").classList.toggle("hidden", !message);
+    inp.classList.toggle("hidden", input === null);
+    inp.value = input ?? "";
+    ok.textContent = okText;
+    ok.className = "btn " + (danger ? "danger-fill" : "primary");
+    const onKey = e => {
+      if (e.isComposing) return; // Enter that finishes an IME composition
+      if (e.key !== "Escape" && e.key !== "Enter") return;
+      e.stopPropagation(); // the page's shortcuts must not act on it too (Esc would clear the selection)
+      if (e.key === "Enter" && e.target.tagName === "BUTTON" && e.target !== ok) return; // Enter on 取消 cancels
+      e.preventDefault();
+      if (e.key === "Escape") close(null); else ok.click();
+    };
+    const close = v => {
+      box.classList.add("hidden");
+      dialogOpen = false;
+      document.removeEventListener("keydown", onKey, true);
+      resolve(v);
+    };
+    ok.onclick = () => close(input === null ? true : inp.value);
+    $("dlgCancel").onclick = () => close(null);
+    box.onmousedown = e => { if (e.target === box) close(null); };
+    document.addEventListener("keydown", onKey, true);
+    dialogOpen = true;
+    box.classList.remove("hidden");
+    if (input === null) ok.focus();
+    else {
+      inp.focus();
+      const dot = inp.value.lastIndexOf(".");
+      inp.setSelectionRange(0, dot > 0 ? dot : inp.value.length); // the name without its extension, like Explorer
+    }
+  });
+}
+const confirmDlg = (title, message, opts = {}) => dialog({ title, message, ...opts }).then(v => v === true);
+const promptDlg = (title, value, opts = {}) => dialog({ title, input: value, ...opts }).then(v => v === null ? null : v.trim());
+
+function toast(msg, kind = "") {
+  const t = document.createElement("div");
+  t.className = "toast " + kind;
+  t.textContent = msg;
+  $("toasts").appendChild(t);
+  setTimeout(() => t.remove(), kind === "err" ? 6000 : 3000);
+}
+function fail(e) { toast(e.message || String(e), "err"); }
+
+let menuCleanup = null;
+/** Opens a dropdown below anchor. items: {icon, label, act, danger?, disabled?} or "-". */
+function openMenu(anchor, items) {
+  closeMenu();
+  const m = $("menu");
+  m.innerHTML = "";
+  for (const it of items) {
+    if (it === "-") { m.appendChild(document.createElement("hr")); continue; }
+    const b = document.createElement("button");
+    b.innerHTML = icon(it.icon) + `<span>${esc(it.label)}</span>`;
+    b.classList.toggle("danger", !!it.danger);
+    b.disabled = !!it.disabled;
+    b.onclick = () => { closeMenu(); it.act(); };
+    m.appendChild(b);
+  }
+  m.classList.remove("hidden");
+  const r = anchor.getBoundingClientRect(), w = m.offsetWidth, h = m.offsetHeight;
+  m.style.left = Math.max(8, Math.min(r.right - w, innerWidth - w - 8)) + "px";
+  m.style.top = (r.bottom + h + 8 > innerHeight ? Math.max(8, r.top - h - 4) : r.bottom + 4) + "px";
+  const away = e => { if (!m.contains(e.target)) closeMenu(); };
+  const key = e => { if (e.key === "Escape") closeMenu(); };
+  document.addEventListener("mousedown", away);
+  document.addEventListener("keydown", key);
+  addEventListener("scroll", closeMenu, true);
+  addEventListener("resize", closeMenu);
+  menuCleanup = () => {
+    document.removeEventListener("mousedown", away);
+    document.removeEventListener("keydown", key);
+    removeEventListener("scroll", closeMenu, true);
+    removeEventListener("resize", closeMenu);
+  };
+}
+function closeMenu() {
+  $("menu").classList.add("hidden");
+  if (menuCleanup) { menuCleanup(); menuCleanup = null; }
+}
+const menuOpen = () => !$("menu").classList.contains("hidden");
 
 // ---------- login ----------
 
@@ -315,6 +629,11 @@ async function init() {
 
 function showLogin() {
   stopPolling();
+  closeMenu();
+  // A session that expired under an open dialog: nothing in it can be carried out any more.
+  if (!$("dlg").classList.contains("hidden")) $("dlgCancel").click();
+  if (!$("picker").classList.contains("hidden")) $("pickerCancel").click();
+  routed = false;
   $("app").classList.add("hidden");
   $("login").classList.remove("hidden");
   fetch("/admin/api/session").then(r => r.json()).then(s => {
@@ -344,66 +663,101 @@ $("logout").onclick = async () => {
 function showApp() {
   $("login").classList.add("hidden");
   $("app").classList.remove("hidden");
-  $("httpsWarn").classList.toggle("hidden", location.protocol === "https:");
-  switchTab(currentTab);
+  $("httpsWarn").classList.toggle("hidden", location.protocol === "https:" || sessionStorage.getItem("fc.httpsWarn") === "closed");
+  route();
 }
 
-// ---------- tabs ----------
+$("warnClose").onclick = () => {
+  sessionStorage.setItem("fc.httpsWarn", "closed");
+  $("httpsWarn").classList.add("hidden");
+};
 
-let currentTab = "conn";
-document.querySelectorAll("nav button").forEach(b => b.onclick = () => switchTab(b.dataset.tab));
+// ---------- routing: #conn, #files/<folder>, #trash, #security ----------
 
-function switchTab(tab) {
+const TABS = ["conn", "files", "trash", "security"];
+let currentTab = "", routed = false;
+
+function hashFor(tab, folder = "") {
+  return "#" + tab + (folder ? "/" + folder.split("/").map(encodeURIComponent).join("/") : "");
+}
+function go(tab, folder = "") {
+  const h = hashFor(tab, folder);
+  if (location.hash === h) route(); else location.hash = h;
+}
+
+function route() {
+  if ($("app").classList.contains("hidden")) return;
+  const [head, ...rest] = location.hash.slice(1).split("/");
+  const tab = TABS.includes(head) ? head : "conn";
+  const changed = tab !== currentTab || !routed;
+  routed = true;
   currentTab = tab;
-  document.querySelectorAll("nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
-  for (const t of ["conn", "files", "trash", "security"]) $("tab-" + t).classList.toggle("hidden", t !== tab);
-  stopPolling();
-  if (tab === "conn") { refreshStatus(); pollTimer = setInterval(refreshStatus, 2000); }
-  if (tab === "files") loadTree();
-  if (tab === "trash") loadTrash();
-  if (tab === "security") loadSecurity();
+  closeMenu();
+  document.querySelectorAll(".nav[data-tab]").forEach(a => a.classList.toggle("active", a.dataset.tab === tab));
+  for (const t of TABS) $("tab-" + t).classList.toggle("hidden", t !== tab);
+  if (tab === "files") {
+    const folder = rest.filter(Boolean).map(s => { try { return decodeURIComponent(s); } catch (e) { return s; } }).join("/");
+    if (folder !== cwd) { cwd = folder; selected.clear(); lastClicked = null; }
+  }
+  if (changed) {
+    startPolling();
+    if (tab === "files") loadTree();
+    if (tab === "trash") { trashSel.clear(); loadTrash(); }
+    if (tab === "security") loadSecurity();
+  } else if (tab === "files") { clampCwd(); renderFiles(); }
 }
+addEventListener("hashchange", route);
 
+// Status polling: every 2 s on the connection page, otherwise only for the disk usage in the sidebar.
 let pollTimer = null;
 function stopPolling() { if (pollTimer) clearInterval(pollTimer); pollTimer = null; }
+function startPolling() {
+  stopPolling();
+  if (document.hidden || $("app").classList.contains("hidden")) return;
+  refreshStatus();
+  pollTimer = setInterval(refreshStatus, currentTab === "conn" ? 2000 : 30000);
+}
+document.addEventListener("visibilitychange", () => document.hidden ? stopPolling() : startPolling());
 
 // ---------- connections, devices ----------
-
-let editingDevice = null; // keep the row's input while polling
 
 async function refreshStatus() {
   let st;
   try { st = await api("GET", "/admin/api/status"); } catch (e) { return; }
   totpEnabled = st.totp;
-  $("accept").checked = st.accepting;
-  $("acceptText").innerHTML = st.accepting ? "<b>允许连接</b>" : "<b style='color:#c62828'>已断开，拒绝所有客户端</b>";
   const d = st.disk;
+  const usedPct = d.total ? (1 - d.free / d.total) * 100 : 0;
+  $("sideDiskText").textContent = d.total ? `已用 ${usedPct.toFixed(0)}% · 剩余 ${fmtSize(d.free)}` : "磁盘 -";
+  $("sideDiskBar").style.width = usedPct.toFixed(1) + "%";
+  $("sideDiskBar").classList.toggle("full", usedPct > 90);
   $("diskUsed").textContent = fmtSize(d.used);
   $("diskTrash").textContent = fmtSize(d.trash);
   $("diskFree").textContent = d.total ? `${fmtSize(d.free)} / ${fmtSize(d.total)}` : "-";
-  $("diskBar").style.width = d.total ? ((1 - d.free / d.total) * 100).toFixed(1) + "%" : "0";
-  if (editingDevice) return;
+  if (!dialogOpen) $("accept").checked = st.accepting; // not while "断开所有客户端？" is being asked
+  $("acceptText").textContent = st.accepting ? "允许连接" : "已断开，拒绝所有客户端";
+  $("connCard").classList.toggle("bad", !st.accepting);
+  requestAnimationFrame(() => $("acceptSwitch").classList.remove("pending")); // after the state applied without animation
+  if (dialogOpen || menuOpen()) return; // keep the rows under an open dialog or menu
   const rows = st.devices.map(dv => {
     const badges = [
-      dv.online ? '<span class="badge on">在线</span>' : '<span class="badge off">离线</span>',
       dv.conflict ? `<span class="badge bad" title="${esc(dv.ips.join(", "))}">ID 冲突</span>` : "",
       dv.pending ? `<span class="badge pend" title="客户端仍在使用旧 ID：${esc(dv.pending.join(", "))}">待同步</span>` : "",
     ].join("");
     const ips = dv.conflict ? dv.ips.map(esc).join("<br>") : esc(dv.lastIP);
     return `<tr class="${dv.conflict ? "conflict" : ""}" data-id="${esc(dv.id)}">
-      <td><button class="link" data-act="rename" title="点击修改">${esc(dv.id)}</button></td>
-      <td>${badges}</td><td>${ips}</td><td>${dv.lastSeen ? ago(dv.lastSeen, st.now) : "-"}</td>
+      <td><span class="dot ${dv.online ? "on" : ""}"></span><b>${esc(dv.id)}</b></td>
+      <td>${dv.online ? "在线" : "离线"}${badges}</td><td>${ips}</td><td>${dv.lastSeen ? ago(dv.lastSeen, st.now) : "-"}</td>
       <td class="num">${fmtRate(dv.upRate)}</td><td class="num">${fmtRate(dv.downRate)}</td>
       <td class="num">${fmtSize(dv.bytesUp)}</td><td class="num">${fmtSize(dv.bytesDown)}</td>
-      <td>${fmtTime(dv.resetAt)}</td>
-      <td><button data-act="reset">重置</button> <button class="danger" data-act="delete">删除</button></td></tr>`;
+      <td class="hide-sm">${fmtTime(dv.resetAt)}</td>
+      <td class="act"><button class="btn ghost icon-btn" data-more title="更多操作">${icon("more")}</button></td></tr>`;
   });
   $("devices").innerHTML = rows.join("") || '<tr><td colspan="10" class="muted">还没有客户端连接过。</td></tr>';
 }
 
 $("accept").onchange = async e => {
   const accept = e.target.checked;
-  if (!accept && !confirm("断开后所有客户端将无法连接，正在进行的传输会中断。确定断开？")) {
+  if (!accept && !await confirmDlg("断开所有客户端？", "断开后所有客户端将无法连接，正在进行的传输会中断。", { okText: "断开", danger: true })) {
     e.target.checked = true;
     return;
   }
@@ -412,94 +766,130 @@ $("accept").onchange = async e => {
 };
 
 $("resetAll").onclick = async () => {
-  if (!confirm("把所有设备的累计流量清零？")) return;
-  try { await api("POST", "/admin/api/devices/reset", { all: true }); } catch (e) { fail(e); }
+  if (!await confirmDlg("全部重置流量？", "把所有设备的累计流量清零。", { okText: "重置" })) return;
+  try { await api("POST", "/admin/api/devices/reset", { all: true }); toast("已重置所有设备的流量"); } catch (e) { fail(e); }
   refreshStatus();
 };
 
-$("devices").onclick = async e => {
-  const btn = e.target.closest("button");
+$("devices").onclick = e => {
+  const btn = e.target.closest("[data-more]");
   if (!btn) return;
   const id = btn.closest("tr").dataset.id;
+  openMenu(btn, [
+    { icon: "edit", label: "修改设备 ID", act: () => renameDevice(id) },
+    { icon: "reset", label: "重置流量", act: () => deviceAction(id, "reset") },
+    "-",
+    { icon: "trash", label: "删除记录", danger: true, act: () => deviceAction(id, "delete") },
+  ]);
+};
+
+async function renameDevice(id) {
+  const newId = await dialog({ title: "修改设备 ID", message: "客户端下次连接服务器时自动同步到其设置。", input: id, okText: "保存" });
+  if (newId === null || newId.trim() === id) return;
+  try { await api("POST", "/admin/api/devices/rename", { id, newId: newId.trim() }); toast(`已改为 ${newId.trim()}`); } catch (e) { fail(e); }
+  refreshStatus();
+}
+
+async function deviceAction(id, act) {
   try {
-    if (btn.dataset.act === "reset") {
-      if (!confirm(`把 ${id} 的累计流量清零？`)) return;
+    if (act === "reset") {
+      if (!await confirmDlg("重置流量？", `把 ${id} 的累计流量清零。`, { okText: "重置" })) return;
       await api("POST", "/admin/api/devices/reset", { id });
-    } else if (btn.dataset.act === "delete") {
-      if (!confirm(`删除设备记录 ${id}？（不影响客户端，它下次连接时会重新出现）`)) return;
+    } else {
+      if (!await confirmDlg("删除设备记录？", `删除 ${id} 的记录。不影响客户端，它下次连接时会重新出现。`, { okText: "删除", danger: true })) return;
       await api("DELETE", "/admin/api/devices?id=" + encodeURIComponent(id));
-    } else if (btn.dataset.act === "rename") {
-      editingDevice = id;
-      const newId = prompt(`修改设备 ID（客户端下次连接时自动同步到其设置）：`, id);
-      editingDevice = null;
-      if (newId === null || newId.trim() === id) return;
-      await api("POST", "/admin/api/devices/rename", { id, newId: newId.trim() });
     }
   } catch (err) { fail(err); }
   refreshStatus();
-};
+}
 
 // ---------- files ----------
 
-let tree = [];          // all entries from fs/tree
-let cwd = "";           // current folder
+let tree = [];             // all entries from fs/tree
+let byPath = new Map();    // path -> entry
+let children = new Map();  // folder path -> its entries
+let cwd = "";              // current folder
 let selected = new Set();
+let lastClicked = null;    // anchor for Shift+click
+let sortKey = "name", sortDir = 1;
+
+let treeSeq = 0; // loads can overlap (an upload ends during a delete): only the latest one counts
 
 async function loadTree() {
-  try { tree = await api("GET", FS + "/tree"); } catch (e) { fail(e); return; }
-  const dirs = new Set(tree.filter(e => e.isDir).map(e => e.path));
-  while (cwd && !dirs.has(cwd)) cwd = parentOf(cwd); // the folder was removed
+  const seq = ++treeSeq;
+  let t;
+  try { t = await api("GET", FS + "/tree"); } catch (e) { fail(e); return; }
+  if (seq !== treeSeq) return;
+  tree = t;
+  byPath = new Map(tree.map(e => [e.path, e]));
+  children = new Map();
+  for (const e of tree) {
+    const p = parentOf(e.path);
+    if (!children.has(p)) children.set(p, []);
+    children.get(p).push(e);
+  }
+  clampCwd();
   renderFiles();
 }
 
-function entryOf(p) { return tree.find(e => e.path === p); }
+// The folder was removed (or the URL names one that does not exist): show the nearest existing parent.
+function clampCwd() {
+  const was = cwd;
+  while (cwd && !byPath.get(cwd)?.isDir) cwd = parentOf(cwd);
+  if (cwd !== was && currentTab === "files") history.replaceState(null, "", hashFor("files", cwd));
+}
+
+const entryOf = p => byPath.get(p);
+// A folder inside a read-only folder is read-only too; only mark the folder that was set.
+const isInReadOnlyParent = p => !!entryOf(parentOf(p))?.readOnly;
+
+function sortedItems() {
+  const items = (children.get(cwd) || []).slice();
+  const byName = (a, b) => baseName(a.path).localeCompare(baseName(b.path), "zh-CN", { numeric: true });
+  const by = {
+    name: byName,
+    size: (a, b) => (a.size || 0) - (b.size || 0) || byName(a, b),
+    mtime: (a, b) => a.mtime - b.mtime || byName(a, b),
+  }[sortKey];
+  return items.sort((a, b) => (b.isDir - a.isDir) || by(a, b) * sortDir);
+}
 
 function renderFiles() {
-  const items = tree.filter(e => parentOf(e.path) === cwd)
-    .sort((a, b) => (b.isDir - a.isDir) || baseName(a.path).localeCompare(baseName(b.path), "zh-CN"));
-  selected = new Set([...selected].filter(p => items.some(e => e.path === p)));
-  $("files").innerHTML = items.map(e => `
-    <tr data-path="${esc(e.path)}" class="${selected.has(e.path) ? "sel" : ""}">
-      <td><input type="checkbox" ${selected.has(e.path) ? "checked" : ""}></td>
-      <td class="name"><span class="ico">${e.isDir ? "📁" : "📄"}</span>${esc(baseName(e.path))}${e.readOnly && e.isDir && !isInReadOnlyParent(e.path) ? " 🔒" : ""}</td>
-      <td>${fmtTime(e.mtime)}</td><td class="num">${e.isDir ? "" : fmtSize(e.size)}</td></tr>`).join("");
+  const items = sortedItems();
+  selected = new Set([...selected].filter(p => byPath.has(p) && parentOf(p) === cwd));
+  $("files").innerHTML = items.map(fileRow).join("");
+  $("fileTable").classList.toggle("hidden", items.length === 0);
   $("filesEmpty").classList.toggle("hidden", items.length > 0);
-  $("selAll").checked = items.length > 0 && selected.size === items.length;
-
-  const parts = cwd ? cwd.split("/") : [];
-  let html = `<button data-path="">云端文件</button>`;
-  parts.forEach((p, i) => { html += ` <span>›</span> <button data-path="${esc(parts.slice(0, i + 1).join("/"))}">${esc(p)}</button>`; });
-  const cur = entryOf(cwd);
-  if (cur && cur.readOnly) html += ` <span class="badge pend">🔒 只读文件夹</span>`;
-  $("crumbs").innerHTML = html;
-  updateToolbar();
-}
-
-// A folder inside a read-only folder is read-only too; only mark the folder that was set.
-function isInReadOnlyParent(p) { const e = entryOf(parentOf(p)); return !!(e && e.readOnly); }
-
-function updateToolbar() {
-  const n = selected.size;
-  document.querySelectorAll("[data-sel]").forEach(b => b.disabled = b.dataset.sel === "1" ? n !== 1 : n === 0);
-  const sel = [...selected].map(entryOf);
-  const folders = sel.every(e => e && e.isDir);
-  $("fReadOnly").disabled = n === 0 || !folders || sel.every(e => e.readOnly);
-  $("fWritable").disabled = n === 0 || !folders || !sel.some(e => e.readOnly && !isInReadOnlyParent(e.path));
-}
-
-$("crumbs").onclick = e => { const b = e.target.closest("button"); if (b) { cwd = b.dataset.path; selected.clear(); renderFiles(); } };
-
-$("files").onclick = e => {
-  const tr = e.target.closest("tr");
-  if (!tr) return;
-  const p = tr.dataset.path;
-  if (e.target.type === "checkbox" || e.ctrlKey || e.metaKey) {
-    selected.has(p) ? selected.delete(p) : selected.add(p);
-  } else {
-    selected = new Set([p]);
-  }
+  const dirs = items.filter(e => e.isDir).length;
+  const bytes = items.reduce((n, e) => n + (e.isDir ? 0 : e.size), 0);
+  $("filesSummary").textContent = items.length ? `${dirs} 个文件夹，${items.length - dirs} 个文件，共 ${fmtSize(bytes)}` : "";
+  document.querySelectorAll("#fileTable th[data-sort]").forEach(th =>
+    th.dataset.dir = th.dataset.sort === sortKey ? (sortDir > 0 ? "asc" : "desc") : "");
+  renderCrumbs();
   showSelection();
-};
+}
+
+function fileRow(e) {
+  const name = baseName(e.path);
+  const lock = e.isDir && e.readOnly && !isInReadOnlyParent(e.path);
+  const label = e.isDir ? `<a href="${esc(hashFor("files", e.path))}">${esc(name)}</a>` : `<span>${esc(name)}</span>`;
+  return `<tr data-path="${esc(e.path)}">
+    <td class="ck"><input type="checkbox"></td>
+    <td><div class="nm" title="${esc(name)}"><span class="fi">${fileIcon(e.path, e.isDir)}${lock ? icon("lock", "lockbadge") : ""}</span>${label}</div></td>
+    <td class="num">${e.isDir ? "" : fmtSize(e.size)}</td>
+    <td class="hide-sm" title="${fmtTime(e.mtime)}">${fmtRel(e.mtime)}</td>
+    <td class="act"><button class="btn ghost icon-btn" data-more title="更多操作">${icon("more")}</button></td></tr>`;
+}
+
+function renderCrumbs() {
+  const parts = cwd ? cwd.split("/") : [];
+  let html = `<a href="#files">${icon("home")}<span>云端文件</span></a>`;
+  parts.forEach((p, i) => {
+    html += `<span class="sep">›</span><a href="${esc(hashFor("files", parts.slice(0, i + 1).join("/")))}">${esc(p)}</a>`;
+  });
+  if (entryOf(cwd)?.readOnly) html += `<span class="badge pend">${icon("lock")}只读</span>`;
+  $("crumbs").innerHTML = html;
+}
 
 // Updates the rows in place: re-rendering would replace the row under the pointer and break double-click.
 function showSelection() {
@@ -509,67 +899,139 @@ function showSelection() {
     tr.classList.toggle("sel", on);
     tr.querySelector("input").checked = on;
   });
-  $("selAll").checked = rows.length > 0 && selected.size === rows.length;
-  updateToolbar();
+  const n = selected.size;
+  $("selAll").checked = rows.length > 0 && n === rows.length;
+  $("selAll").indeterminate = n > 0 && n < rows.length;
+  $("fileTable").classList.toggle("selecting", n > 0);
+  $("filesHead").classList.toggle("hidden", n > 0);
+  $("filesSel").classList.toggle("hidden", n === 0);
+  $("selCount").textContent = `已选 ${n} 项`;
+  const sel = [...selected].map(entryOf);
+  const folders = n > 0 && sel.every(e => e.isDir);
+  $("fRename").disabled = n !== 1;
+  $("fReadOnly").classList.toggle("hidden", !folders || sel.every(e => e.readOnly));
+  $("fWritable").classList.toggle("hidden", !folders || !sel.some(e => e.readOnly && !isInReadOnlyParent(e.path)));
 }
-$("files").ondblclick = e => {
+
+$("files").onclick = e => {
   const tr = e.target.closest("tr");
   if (!tr) return;
-  const ent = entryOf(tr.dataset.path);
-  if (ent.isDir) { cwd = ent.path; selected.clear(); renderFiles(); }
-  else download(ent.path);
-};
-$("selAll").onchange = e => {
-  selected = e.target.checked ? new Set(tree.filter(x => parentOf(x.path) === cwd).map(x => x.path)) : new Set();
+  const p = tr.dataset.path;
+  const more = e.target.closest("[data-more]");
+  if (more) { rowMenu(more, entryOf(p)); return; }
+  if (e.target.closest("a")) return; // folder name: the link navigates
+  const paths = [...$("files").querySelectorAll("tr")].map(r => r.dataset.path);
+  const anchor = e.shiftKey && lastClicked ? paths.indexOf(lastClicked) : -1;
+  if (anchor >= 0) {
+    const b = paths.indexOf(p);
+    paths.slice(Math.min(anchor, b), Math.max(anchor, b) + 1).forEach(q => selected.add(q));
+  } else if (e.target.type === "checkbox" || e.ctrlKey || e.metaKey) {
+    selected.has(p) ? selected.delete(p) : selected.add(p);
+    lastClicked = p;
+  } else {
+    selected = new Set([p]);
+    lastClicked = p;
+  }
   showSelection();
 };
+$("files").ondblclick = e => {
+  const tr = e.target.closest("tr");
+  if (!tr || e.target.closest("[data-more], a, input")) return;
+  const ent = entryOf(tr.dataset.path);
+  if (ent.isDir) go("files", ent.path); else downloadItems([ent.path]);
+};
+$("selAll").onchange = e => {
+  selected = e.target.checked ? new Set((children.get(cwd) || []).map(x => x.path)) : new Set();
+  showSelection();
+};
+$("selClear").onclick = () => { selected.clear(); showSelection(); };
+document.querySelectorAll("#fileTable th[data-sort]").forEach(th => th.onclick = () => {
+  if (sortKey === th.dataset.sort) sortDir = -sortDir; else { sortKey = th.dataset.sort; sortDir = 1; }
+  renderFiles();
+});
 $("fRefresh").onclick = loadTree;
+$("newBtn").onclick = e => openMenu(e.currentTarget, [
+  { icon: "upload", label: "上传文件", act: () => $("fileInput").click() },
+  { icon: "upload", label: "上传文件夹", act: () => $("folderInput").click() },
+  "-",
+  { icon: "folder", label: "新建文件夹", act: makeFolder },
+]);
 
-function download(p) {
+document.addEventListener("keydown", e => {
+  if ($("app").classList.contains("hidden") || dialogOpen || menuOpen()
+      || e.target.matches("input[type=text], input[type=password], textarea")) return;
+  if (currentTab === "files") {
+    if (e.key === "Escape" && selected.size) { selected.clear(); showSelection(); }
+    else if (e.key === "Delete" && selected.size) deleteItems([...selected]);
+    else if (e.key === "F2" && selected.size === 1) { e.preventDefault(); renameItem([...selected][0]); }
+  } else if (currentTab === "trash" && e.key === "Escape" && trashSel.size) { trashSel.clear(); showTrashSelection(); }
+});
+
+function rowMenu(btn, e) {
+  const p = e.path;
+  const items = e.isDir
+    ? [{ icon: "folder", label: "打开", act: () => go("files", p) }, { icon: "download", label: "下载为 zip", act: () => downloadItems([p]) }]
+    : [{ icon: "download", label: "下载", act: () => downloadItems([p]) }];
+  items.push("-",
+    { icon: "edit", label: "重命名", act: () => renameItem(p) },
+    { icon: "copy", label: "复制到…", act: () => copyOrMove(false, [p]) },
+    { icon: "move", label: "移动到…", act: () => copyOrMove(true, [p]) });
+  if (e.isDir) items.push(e.readOnly
+    ? { icon: "unlock", label: isInReadOnlyParent(p) ? "取消只读（由上级决定）" : "取消只读", disabled: isInReadOnlyParent(p), act: () => setReadOnly(false, [p]) }
+    : { icon: "lock", label: "设为只读", act: () => setReadOnly(true, [p]) });
+  items.push("-", { icon: "trash", label: "删除", danger: true, act: () => deleteItems([p]) });
+  openMenu(btn, items);
+}
+
+// A single file downloads directly (resumable); folders and several items come as one zip.
+function downloadItems(paths) {
   const a = document.createElement("a");
-  a.href = FS + "/file?path=" + encodeURIComponent(p) + "&download=1";
-  a.download = baseName(p);
+  if (paths.length === 1 && entryOf(paths[0])?.isDir === false) {
+    a.href = FS + "/file?path=" + encodeURIComponent(paths[0]) + "&download=1";
+    a.download = baseName(paths[0]);
+  } else {
+    a.href = FS + "/zip?" + paths.map(p => "path=" + encodeURIComponent(p)).join("&");
+    a.download = ""; // on an error answer the browser reports a failed download instead of leaving the panel
+  }
   document.body.appendChild(a);
   a.click();
   a.remove();
 }
+$("fDownload").onclick = () => downloadItems([...selected]);
 
-$("fDownload").onclick = () => {
-  const sel = [...selected].map(entryOf);
-  if (sel.some(e => e.isDir)) { alert("文件夹不能直接下载，请进入文件夹选择文件。"); return; }
-  sel.forEach((e, i) => setTimeout(() => download(e.path), i * 400));
-};
-
-$("mkdir").onclick = async () => {
-  const name = prompt("新文件夹名称：", "新建文件夹");
+async function makeFolder() {
+  const name = await promptDlg("新建文件夹", "新建文件夹", { okText: "创建" });
   if (!name) return;
-  try { await api("POST", FS + "/mkdir", { path: join(cwd, name.trim()) }); } catch (e) { fail(e); }
+  try { await api("POST", FS + "/mkdir", { path: join(cwd, name) }); } catch (e) { fail(e); }
   loadTree();
-};
+}
 
-$("fRename").onclick = async () => {
-  const p = [...selected][0];
-  const name = prompt("新名称：", baseName(p));
+async function renameItem(p) {
+  const name = await promptDlg("重命名", baseName(p), { okText: "重命名" });
   if (!name || name === baseName(p)) return;
-  try { await api("POST", FS + "/move", { from: p, to: join(parentOf(p), name.trim()) }); } catch (e) { fail(e); }
-  selected.clear();
+  try { await api("POST", FS + "/move", { from: p, to: join(parentOf(p), name) }); selected.clear(); } catch (e) { fail(e); }
   loadTree();
-};
+}
+$("fRename").onclick = () => renameItem([...selected][0]);
 
-$("fDelete").onclick = async () => {
-  const sel = [...selected];
-  if (!confirm(`删除 ${sel.length} 个项目？删除后进入回收站，可以还原。`)) return;
-  for (const p of sel) {
-    try { await api("DELETE", FS + "/file?path=" + encodeURIComponent(p)); } catch (e) { fail(e); break; }
+async function deleteItems(paths) {
+  const what = paths.length === 1 ? `“${baseName(paths[0])}”` : `这 ${paths.length} 项`;
+  if (!await confirmDlg(`删除${what}？`, "删除后进入回收站，可以还原。", { okText: "删除", danger: true })) return;
+  let done = 0;
+  for (const p of paths) {
+    try { await api("DELETE", FS + "/file?path=" + encodeURIComponent(p)); done++; }
+    catch (e) { fail(new Error(`${baseName(p)}：${e.message}`)); break; }
   }
+  if (done) toast(`已删除 ${done} 项`);
   selected.clear();
   loadTree();
-};
+}
+$("fDelete").onclick = () => deleteItems([...selected]);
 
-async function setReadOnly(ro) {
+async function setReadOnly(ro, paths) {
   // A subfolder stays read-only while a selected ancestor is: retry until no more progress.
   const elsewhere = MESSAGES["still read-only through another folder"];
-  let todo = [...selected];
+  let todo = paths;
   while (todo.length) {
     const later = [];
     for (const p of todo) {
@@ -578,13 +1040,14 @@ async function setReadOnly(ro) {
         fail(e); loadTree(); return;
       }
     }
-    if (later.length === todo.length) { fail(new Error(elsewhere)); break; }
+    if (later.length === todo.length) { fail(new Error(elsewhere)); loadTree(); return; }
     todo = later;
   }
+  toast(ro ? "已设为只读" : "已取消只读");
   loadTree();
 }
-$("fReadOnly").onclick = () => setReadOnly(true);
-$("fWritable").onclick = () => setReadOnly(false);
+$("fReadOnly").onclick = () => setReadOnly(true, [...selected]);
+$("fWritable").onclick = () => setReadOnly(false, [...selected]);
 
 // Folder picker for copy / move.
 function pickFolder(title, exclude) {
@@ -595,8 +1058,15 @@ function pickFolder(title, exclude) {
     $("pickerTitle").textContent = title;
     $("pickerList").innerHTML = dirs.map(d => {
       const depth = d ? d.split("/").length : 0;
-      return `<div data-path="${esc(d)}" style="padding-left:${8 + depth * 18}px">📁 ${d ? esc(baseName(d)) : "云端文件（根目录）"}</div>`;
+      return `<div data-path="${esc(d)}" style="padding-left:${8 + depth * 18}px">${icon("dir", "dir")}${d ? esc(baseName(d)) : "云端文件（根目录）"}</div>`;
     }).join("");
+    const close = v => {
+      $("picker").classList.add("hidden");
+      dialogOpen = false;
+      document.removeEventListener("keydown", onKey, true);
+      resolve(v);
+    };
+    const onKey = e => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(null); } };
     $("pickerList").onclick = e => {
       const div = e.target.closest("div[data-path]");
       if (!div) return;
@@ -604,32 +1074,36 @@ function pickFolder(title, exclude) {
       div.classList.add("sel");
       chosen = div.dataset.path;
     };
-    const close = v => { $("picker").classList.add("hidden"); resolve(v); };
-    $("pickerOk").onclick = () => chosen === null ? alert("请选择目标文件夹") : close(chosen);
+    $("pickerList").ondblclick = e => { const div = e.target.closest("div[data-path]"); if (div) close(div.dataset.path); };
+    $("pickerOk").onclick = () => chosen === null ? toast("请选择目标文件夹", "err") : close(chosen);
     $("pickerCancel").onclick = () => close(null);
+    document.addEventListener("keydown", onKey, true);
+    dialogOpen = true;
     $("picker").classList.remove("hidden");
   });
 }
 
-async function copyOrMove(move) {
-  const sel = [...selected];
-  const target = await pickFolder(move ? "移动到…" : "复制到…", move ? sel : []);
+async function copyOrMove(move, paths) {
+  const target = await pickFolder(move ? "移动到…" : "复制到…", move ? paths : []);
   if (target === null) return;
-  for (const p of sel) {
+  let done = 0;
+  for (const p of paths) {
     const to = join(target, baseName(p));
     if (move && to === p) continue;
-    try { await api("POST", FS + (move ? "/move" : "/copy"), { from: p, to }); }
+    try { await api("POST", FS + (move ? "/move" : "/copy"), { from: p, to }); done++; }
     catch (e) { fail(new Error(`${baseName(p)}：${e.message}`)); break; }
   }
+  if (done) toast(`已${move ? "移动" : "复制"} ${done} 项`);
   selected.clear();
   loadTree();
 }
-$("fCopy").onclick = () => copyOrMove(false);
-$("fMove").onclick = () => copyOrMove(true);
+$("fCopy").onclick = () => copyOrMove(false, [...selected]);
+$("fMove").onclick = () => copyOrMove(true, [...selected]);
 
 // ---------- uploads (same chunked protocol as the Windows client) ----------
 
-const UPLOAD_PARALLEL = 3;
+const UPLOAD_PARALLEL = 3; // chunks per file
+const UPLOAD_FILES = 3;    // files at a time
 
 // Retries network errors and 5xx; a 4xx (session expired, upload gone) fails right away.
 async function putChunk(id, off, blob) {
@@ -649,21 +1123,25 @@ async function putChunk(id, off, blob) {
   }
 }
 
-async function uploadFile(file, rel, line) {
+async function uploadFile(file, rel, progress) {
   const existing = entryOf(rel);
   const init = await api("POST", FS + "/upload/init", { path: rel, size: file.size, mtime: file.lastModified });
   const offsets = [];
   for (let o = 0; o < file.size; o += init.chunkSize) offsets.push(o);
   let done = 0;
-  const show = () => line.textContent = `⬆ ${rel}  ${file.size ? Math.floor(done / file.size * 100) : 100}%`;
-  show();
+  progress(file.size ? 0 : 1);
   const worker = async () => {
-    while (offsets.length) {
-      const o = offsets.shift();
-      const blob = file.slice(o, o + init.chunkSize);
-      await putChunk(init.id, o, blob);
-      done += blob.size;
-      show();
+    try {
+      while (offsets.length) {
+        const o = offsets.shift();
+        const blob = file.slice(o, o + init.chunkSize);
+        await putChunk(init.id, o, blob);
+        done += blob.size;
+        progress(done / file.size);
+      }
+    } catch (e) {
+      offsets.length = 0; // the file has failed: the other workers stop sending its chunks
+      throw e;
     }
   };
   await Promise.all(Array.from({ length: UPLOAD_PARALLEL }, worker));
@@ -671,39 +1149,81 @@ async function uploadFile(file, rel, line) {
   await api("POST", `${FS}/upload/${init.id}/complete`, { baseMtime: existing && !existing.isDir ? existing.mtime : 0 });
 }
 
+function uploadRow(rel) {
+  const row = document.createElement("div");
+  row.className = "up-row";
+  row.innerHTML = `<div class="top"><span class="name" title="${esc(rel)}">${esc(baseName(rel))}</span><span class="st">等待中</span></div><div class="bar"><div></div></div>`;
+  $("upList").appendChild(row);
+  $("uploads").classList.remove("hidden");
+  updateUploadTitle();
+  const st = row.querySelector(".st"), bar = row.querySelector(".bar > div");
+  return {
+    progress(f) { st.textContent = Math.floor(f * 100) + "%"; bar.style.width = (f * 100).toFixed(1) + "%"; },
+    done() {
+      row.classList.add("done");
+      st.textContent = "完成";
+      bar.style.width = "100%";
+      updateUploadTitle();
+      setTimeout(() => { row.remove(); updateUploadTitle(); }, 3000);
+    },
+    failed(msg) { row.classList.add("failed"); st.textContent = msg; updateUploadTitle(); },
+  };
+}
+function updateUploadTitle() {
+  const rows = [...$("upList").children];
+  if (!rows.length) { $("uploads").classList.add("hidden"); return; }
+  const running = rows.filter(r => !r.classList.contains("done") && !r.classList.contains("failed")).length;
+  const failed = rows.filter(r => r.classList.contains("failed")).length;
+  $("upTitle").textContent = running ? `正在上传 ${running} 个文件` : failed ? `${failed} 个文件上传失败` : "上传完成";
+}
+$("upClose").onclick = () => {
+  $("upList").querySelectorAll(".done, .failed").forEach(r => r.remove());
+  updateUploadTitle();
+};
+
 // files: [{file, rel}] with rel relative to the current folder.
 async function uploadAll(files) {
   if (!files.length) return;
-  const taken = files.filter(f => { const e = entryOf(join(cwd, f.rel)); return e && !e.isDir; });
-  if (taken.length && !confirm(`${taken.length} 个文件已存在（如 ${taken[0].rel}），覆盖？`)) return;
   const base = cwd;
-  for (const f of files) {
-    const rel = join(base, f.rel);
-    const line = document.createElement("div");
-    $("uploads").appendChild(line);
-    try {
-      await uploadFile(f.file, rel, line);
-      line.textContent = `✔ ${rel}`;
-    } catch (e) {
-      line.textContent = `✖ ${rel}：${MESSAGES[e.message] || e.message}`;
-      line.style.color = "#c62828";
+  const taken = files.filter(f => { const e = entryOf(join(base, f.rel)); return e && !e.isDir; });
+  if (taken.length && !await confirmDlg("覆盖已有文件？", `${taken.length} 个文件已存在（如 ${taken[0].rel}），上传会覆盖它们。`, { okText: "覆盖" })) return;
+  const queue = files.map(f => ({ file: f.file, rel: join(base, f.rel), row: uploadRow(join(base, f.rel)) }));
+  const worker = async () => {
+    while (queue.length) {
+      const f = queue.shift();
+      try { await uploadFile(f.file, f.rel, x => f.row.progress(x)); f.row.done(); }
+      catch (e) {
+        f.row.failed(MESSAGES[e.message] || e.message);
+        if ($("app").classList.contains("hidden")) { // logged out: the rest would fail the same way
+          queue.splice(0).forEach(q => q.row.failed("登录已失效"));
+        }
+      }
     }
-  }
-  setTimeout(() => { $("uploads").querySelectorAll("div").forEach(d => { if (d.textContent.startsWith("✔")) d.remove(); }); }, 5000);
+  };
+  await Promise.all(Array.from({ length: Math.min(UPLOAD_FILES, queue.length) }, worker));
   loadTree();
 }
 
-$("upFiles").onclick = () => $("fileInput").click();
-$("upFolder").onclick = () => $("folderInput").click();
 $("fileInput").onchange = e => { uploadAll([...e.target.files].map(f => ({ file: f, rel: f.name }))); e.target.value = ""; };
 $("folderInput").onchange = e => { uploadAll([...e.target.files].map(f => ({ file: f, rel: f.webkitRelativePath }))); e.target.value = ""; };
 
-const drop = $("drop");
-drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
-drop.ondragleave = e => { if (!drop.contains(e.relatedTarget)) drop.classList.remove("over"); };
-drop.ondrop = async e => {
+// Drag and drop anywhere on the files page; elsewhere a dropped file must not open in the browser.
+let dragDepth = 0;
+const isFileDrag = e => [...(e.dataTransfer?.types || [])].includes("Files");
+const canDrop = () => currentTab === "files" && !$("app").classList.contains("hidden") && !dialogOpen;
+addEventListener("dragenter", e => {
+  if (!isFileDrag(e) || !canDrop()) return;
+  dragDepth++;
+  $("dropzone").classList.remove("hidden");
+});
+addEventListener("dragleave", () => { if (dragDepth && --dragDepth === 0) $("dropzone").classList.add("hidden"); });
+addEventListener("dragover", e => { if (isFileDrag(e)) e.preventDefault(); });
+addEventListener("drop", async e => {
+  if (!isFileDrag(e)) return;
   e.preventDefault();
-  drop.classList.remove("over");
+  dragDepth = 0;
+  $("dropzone").classList.add("hidden");
+  if (!canDrop()) return;
   const entries = [...e.dataTransfer.items].map(i => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
   const files = [];
   const walk = async (entry, prefix) => {
@@ -720,40 +1240,88 @@ drop.ondrop = async e => {
   };
   for (const en of entries) await walk(en, "");
   uploadAll(files);
-};
+});
 
 // ---------- recycle bin ----------
 
+let trashItems = [];
+let trashSel = new Set();
+
 async function loadTrash() {
-  let items;
-  try { items = await api("GET", "/admin/api/trash"); } catch (e) { fail(e); return; }
-  $("trash").innerHTML = items.map(it => `
-    <tr data-id="${esc(it.id)}"><td>${it.isDir ? "📁" : "📄"} ${esc(it.path)}</td><td>${it.isDir ? "文件夹" : "文件"}</td>
-    <td class="num">${fmtSize(it.size)}</td><td>${fmtTime(it.deletedAt)}</td><td>${esc(it.deletedBy)}</td>
-    <td><button data-act="restore">还原</button> <button class="danger" data-act="delete">永久删除</button></td></tr>`).join("");
-  $("trashEmpty").classList.toggle("hidden", items.length > 0);
-  $("emptyTrash").disabled = items.length === 0;
+  try { trashItems = await api("GET", "/admin/api/trash"); } catch (e) { fail(e); return; }
+  trashSel = new Set([...trashSel].filter(id => trashItems.some(t => t.id === id)));
+  $("trash").innerHTML = trashItems.map(it => `
+    <tr data-id="${esc(it.id)}">
+      <td class="ck"><input type="checkbox"></td>
+      <td><div class="nm" title="${esc(it.path)}"><span class="fi">${fileIcon(it.path, it.isDir)}</span>
+        <span class="two"><span>${esc(baseName(it.path))}</span><small>${esc(parentOf(it.path) || "根目录")}</small></span></div></td>
+      <td class="num">${fmtSize(it.size)}</td>
+      <td class="hide-sm" title="${fmtTime(it.deletedAt)}">${fmtRel(it.deletedAt)}</td>
+      <td class="hide-sm">${esc(it.deletedBy)}</td>
+      <td class="act2"><button class="btn small" data-act="restore">还原</button><button class="btn small danger" data-act="delete">永久删除</button></td></tr>`).join("");
+  $("trashTable").classList.toggle("hidden", trashItems.length === 0);
+  $("trashEmpty").classList.toggle("hidden", trashItems.length > 0);
+  $("emptyTrash").disabled = trashItems.length === 0;
+  showTrashSelection();
 }
 
-$("trash").onclick = async e => {
-  const btn = e.target.closest("button");
-  if (!btn) return;
-  const id = btn.closest("tr").dataset.id;
-  try {
-    if (btn.dataset.act === "restore") {
-      const r = await api("POST", "/admin/api/trash/restore", { id });
-      alert("已还原到：" + r.path);
-    } else {
-      if (!confirm("永久删除后无法恢复，确定？")) return;
-      await api("DELETE", "/admin/api/trash?id=" + encodeURIComponent(id));
-    }
-  } catch (err) { fail(err); }
-  loadTrash();
+function showTrashSelection() {
+  const rows = $("trash").querySelectorAll("tr");
+  rows.forEach(tr => {
+    const on = trashSel.has(tr.dataset.id);
+    tr.classList.toggle("sel", on);
+    tr.querySelector("input").checked = on;
+  });
+  const n = trashSel.size;
+  $("trashAll").checked = rows.length > 0 && n === rows.length;
+  $("trashAll").indeterminate = n > 0 && n < rows.length;
+  $("trashTable").classList.toggle("selecting", n > 0);
+  $("trashHead").classList.toggle("hidden", n > 0);
+  $("trashSel").classList.toggle("hidden", n === 0);
+  $("trashSelCount").textContent = `已选 ${n} 项`;
+}
+
+$("trash").onclick = e => {
+  const tr = e.target.closest("tr");
+  if (!tr) return;
+  const id = tr.dataset.id;
+  const btn = e.target.closest("button[data-act]");
+  if (btn) { trashBatch(btn.dataset.act === "restore", [id]); return; }
+  if (e.target.type === "checkbox" || e.ctrlKey || e.metaKey) trashSel.has(id) ? trashSel.delete(id) : trashSel.add(id);
+  else trashSel = new Set([id]);
+  showTrashSelection();
 };
+$("trashAll").onchange = e => {
+  trashSel = e.target.checked ? new Set(trashItems.map(t => t.id)) : new Set();
+  showTrashSelection();
+};
+$("trashSelClear").onclick = () => { trashSel.clear(); showTrashSelection(); };
+$("tRestore").onclick = () => trashBatch(true, [...trashSel]);
+$("tDelete").onclick = () => trashBatch(false, [...trashSel]);
+
+// One request per item; stops at the first failure (what is done stays done).
+async function trashBatch(restore, ids) {
+  if (!restore && !await confirmDlg(`永久删除 ${ids.length} 项？`, "永久删除后无法恢复。", { okText: "永久删除", danger: true })) return;
+  let done = 0, last = "";
+  for (const id of ids) {
+    try {
+      if (restore) last = (await api("POST", "/admin/api/trash/restore", { id })).path;
+      else await api("DELETE", "/admin/api/trash?id=" + encodeURIComponent(id));
+      done++;
+      trashSel.delete(id);
+    } catch (e) {
+      const it = trashItems.find(t => t.id === id);
+      fail(new Error(`${it ? baseName(it.path) : id}：${e.message}`));
+      break;
+    }
+  }
+  if (done) toast(restore ? (done === 1 ? "已还原到：" + last : `已还原 ${done} 项`) : `已永久删除 ${done} 项`);
+  loadTrash();
+}
 
 $("emptyTrash").onclick = async () => {
-  if (!confirm("清空回收站？所有项目将被永久删除，无法恢复。")) return;
-  try { await api("POST", "/admin/api/trash/empty"); } catch (e) { fail(e); }
+  if (!await confirmDlg("清空回收站？", "所有项目将被永久删除，无法恢复。", { okText: "清空", danger: true })) return;
+  try { await api("POST", "/admin/api/trash/empty"); toast("回收站已清空"); } catch (e) { fail(e); }
   loadTrash();
 };
 
@@ -764,6 +1332,7 @@ async function loadSecurity() {
   $("totpOff").classList.toggle("hidden", totpEnabled);
   $("totpOn").classList.toggle("hidden", !totpEnabled);
   $("totpSetupBox").classList.add("hidden");
+  $("totpSetup").classList.remove("hidden");
   $("pwCodeRow").classList.toggle("hidden", !totpEnabled);
   $("totpError").textContent = "";
 }
@@ -774,6 +1343,7 @@ $("totpSetup").onclick = async () => {
     $("qr").innerHTML = r.qrSvg; // generated by the server, no user input
     $("totpSecret").textContent = r.secret.replace(/(.{4})/g, "$1 ").trim();
     $("totpSetupBox").classList.remove("hidden");
+    $("totpSetup").classList.add("hidden");
     $("totpEnableCode").focus();
   } catch (e) { $("totpError").textContent = e.message; }
 };
@@ -782,16 +1352,17 @@ $("totpEnable").onclick = async () => {
   try {
     await api("POST", "/admin/api/totp/enable", { code: $("totpEnableCode").value });
     $("totpEnableCode").value = "";
-    alert("二步认证已启用。");
+    toast("二步认证已启用");
     loadSecurity();
   } catch (e) { $("totpError").textContent = e.message; }
 };
 
 $("totpDisable").onclick = async () => {
-  if (!confirm("停用后登录面板和解锁客户端都不再需要验证码，确定停用？")) return;
+  if (!await confirmDlg("停用二步认证？", "停用后登录面板和解锁客户端都不再需要验证码。", { okText: "停用", danger: true })) return;
   try {
     await api("POST", "/admin/api/totp/disable", { code: $("totpDisableCode").value });
     $("totpDisableCode").value = "";
+    toast("二步认证已停用");
     loadSecurity();
   } catch (e) { $("totpError").textContent = e.message; }
 };
@@ -803,7 +1374,7 @@ $("pwForm").onsubmit = async e => {
   try {
     await api("POST", "/admin/api/password", { old: $("pwOld").value, new: $("pwNew").value, code: $("pwCode").value });
     $("pwForm").reset();
-    alert("密码已修改。");
+    toast("密码已修改");
   } catch (err) { $("pwError").textContent = err.message; }
 };
 
