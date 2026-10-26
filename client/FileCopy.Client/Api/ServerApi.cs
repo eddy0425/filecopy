@@ -50,6 +50,9 @@ public sealed class ServerApi : IDisposable
 
     private static string Q(string path) => Uri.EscapeDataString(path);
 
+    private static bool IsUnauthorized(Exception ex) =>
+        ex is HttpRequestException { StatusCode: HttpStatusCode.Unauthorized };
+
     private static CancellationTokenSource WithTimeout(CancellationToken ct, int seconds = 60)
     {
         var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -125,7 +128,7 @@ public sealed class ServerApi : IDisposable
                 }
                 return buf;
             }
-            catch (Exception ex) when (attempt < MaxRetries && !ct.IsCancellationRequested)
+            catch (Exception ex) when (attempt < MaxRetries && !ct.IsCancellationRequested && !IsUnauthorized(ex))
             {
                 onRetry?.Invoke(attempt, ex);
                 await Task.Delay(TimeSpan.FromSeconds(attempt * 2), ct);
@@ -261,7 +264,7 @@ public sealed class ServerApi : IDisposable
                         resp.EnsureSuccessStatusCode();
                         break;
                     }
-                    catch (Exception ex) when (attempt < MaxRetries && !token.IsCancellationRequested)
+                    catch (Exception ex) when (attempt < MaxRetries && !token.IsCancellationRequested && !IsUnauthorized(ex))
                     {
                         onRetry?.Invoke(attempt, ex);
                         await Task.Delay(TimeSpan.FromSeconds(attempt * 2), token);

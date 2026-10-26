@@ -1,5 +1,6 @@
 using System.IO;
 using System.Net;
+using System.Net.Http;
 using System.Net.Sockets;
 using FileCopy.Client.Api;
 
@@ -114,8 +115,8 @@ public sealed class ServerApiTests : IDisposable
         reserved.Bind(new IPEndPoint(IPAddress.Loopback, 0));
         using var api = new ServerApi($"http://127.0.0.1:{((IPEndPoint)reserved.LocalEndPoint!).Port}/", TestServer.Token);
         var attempts = new List<int>();
-        await Assert.ThrowsAnyAsync<Exception>(() =>
-            api.DownloadRangeAsync("r.txt", 0, 4, default, (a, _) => attempts.Add(a))).T(60);
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            api.DownloadRangeAsync("r.txt", 0, 4, default, (a, _) => attempts.Add(a)).T(60));
         Assert.Equal(Enumerable.Range(1, ServerApi.MaxRetries - 1), attempts);
     }
 
