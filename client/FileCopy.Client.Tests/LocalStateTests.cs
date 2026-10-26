@@ -43,6 +43,43 @@ public class LocalStateTests
     }
 
     [Fact]
+    public void Delete_ForgetsTheServersState_AndKeepsOtherServers()
+    {
+        var folder = TestEnv.NewDir("state");
+        var old = LocalState.Load("http://old.test", folder);
+        old.SetFile("a.txt", Snap());
+        old.Flush();
+        var other = LocalState.Load("http://other.test", folder);
+        other.SetFile("a.txt", Snap());
+        other.Flush();
+
+        LocalState.Delete("HTTP://old.test/", folder);
+        LocalState.Delete("http://old.test", folder); // already gone: no error
+
+        Assert.Null(LocalState.Load("http://old.test", folder).GetFile("a.txt"));
+        Assert.NotNull(LocalState.Load("http://other.test", folder).GetFile("a.txt"));
+    }
+
+    [Fact]
+    public async Task Discard_DeletesTheFile_AndLaterWritesDoNotBringItBack()
+    {
+        var folder = TestEnv.NewDir("state");
+        var s = LocalState.Load("http://discard.test", folder);
+        s.SetFile("a.txt", Snap());
+        s.Flush();
+        s.SetFile("b.txt", Snap());
+        s.Save(); // pending background write, as from a transfer finishing during the disconnect
+
+        s.Discard();
+        s.SetFile("c.txt", Snap());
+        s.Save();
+        s.Flush();
+        await Task.Delay(1500); // past SaveDelay
+
+        Assert.Empty(LocalState.Load("http://discard.test", folder).FileKeys());
+    }
+
+    [Fact]
     public async Task Save_WritesInTheBackground()
     {
         var folder = TestEnv.NewDir("state");

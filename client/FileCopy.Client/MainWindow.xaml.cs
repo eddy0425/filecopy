@@ -38,6 +38,7 @@ public partial class MainWindow : Window
     private bool _hiddenToTray = true; // started or closed to the tray since the last unlock (not shown yet counts too)
     private DateTime _unlockedAt = DateTime.MinValue;
     private bool _unlocking;
+    private bool _settingsShown; // so the first show does not reopen settings the lock prompt already offered
     private readonly System.Windows.Media.Brush _normalStatusBrush; // StatusText's foreground as set in XAML
 
     public bool StartMinimized { get; }
@@ -55,8 +56,8 @@ public partial class MainWindow : Window
         UpdateBreadcrumb();
         Loaded += (_, _) =>
         {
-            if (_settings.GetToken().Length == 0) OpenSettings();
-            else _ = ConnectAsync();
+            if (_settings.GetToken().Length > 0) _ = ConnectAsync();
+            else if (!_settingsShown) OpenSettings();
         };
         if (StartMinimized) _ = ConnectAsync();
         var heartbeat = new System.Windows.Threading.DispatcherTimer { Interval = HeartbeatInterval };
@@ -94,11 +95,7 @@ public partial class MainWindow : Window
                 if (code == null) return false;
                 await connecting;
                 var sync = _sync;
-                if (sync == null)
-                {
-                    MessageBox.Show("未连接服务器，无法验证。请等待连接恢复后再试。", "FileCopy");
-                    return false;
-                }
+                if (sync == null) return OfferServerReset("未连接服务器，无法验证。");
                 try
                 {
                     if (await sync.VerifyTotpAsync(code))
@@ -113,6 +110,10 @@ public partial class MainWindow : Window
                     prompt = ex.Message + "：";
                     continue;
                 }
+                catch (UnauthorizedException ex)
+                {
+                    return OfferServerReset("无法验证: " + SyncService.ErrorText(ex));
+                }
                 catch (Exception ex)
                 {
                     MessageBox.Show("无法验证: " + SyncService.ErrorText(ex), "FileCopy");
@@ -126,6 +127,34 @@ public partial class MainWindow : Window
         {
             _unlocking = false;
         }
+    }
+
+    /// <summary>
+    /// The code cannot be checked, e.g. because the server was replaced: offers to forget the token so another
+    /// server can be set up. Keeping it would let anyone unlock by pointing the client at a server of their own,
+    /// and would send the token there. Returns true (unlocked) once the token is gone: there is nothing left to lock.
+    /// </summary>
+    private bool OfferServerReset(string reason)
+    {
+        var answer = MessageBox.Show(reason + "\n\n如果已经更换了服务器，可以清除当前 Token 后重新设置服务器地址和 Token；若只是网络暂时中断，请选择“否”。\n是否清除 Token 并打开设置？",
+            "FileCopy", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (answer != MessageBoxResult.Yes) return false;
+        try
+        {
+            if (_sync != null) _sync.State.Discard(); // before Disconnect, whose flush would write it again
+            else LocalState.Delete(_settings.ServerUrl, _settings.LocalFolder);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { } // a stale state file does no harm
+        Disconnect();
+        _settings.ResetServer();
+        Log("已清除 Token 和同步状态，请重新设置服务器");
+        StatusText.Text = "未连接：请在设置中填写服务器地址和 Token";
+        StatusText.Foreground = System.Windows.Media.Brushes.Firebrick;
+        _folder = "";
+        UpdateBreadcrumb();
+        Reload();
+        OpenSettings();
+        return true;
     }
 
     /// <summary>
@@ -295,6 +324,7 @@ public partial class MainWindow : Window
 
     private void OpenSettings()
     {
+        _settingsShown = true;
         var dlg = new SettingsWindow(_settings) { Owner = IsVisible ? this : null };
         if (dlg.ShowDialog() == true)
         {

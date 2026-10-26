@@ -43,6 +43,14 @@ public sealed class Settings
         ProtectedToken = Convert.ToBase64String(
             ProtectedData.Protect(Encoding.UTF8.GetBytes(token), null, DataProtectionScope.CurrentUser));
 
+    /// <summary>Forgets the server's token and lock, so a replaced server can be set up again.</summary>
+    public void ResetServer()
+    {
+        ProtectedToken = "";
+        ServerTotpEnabled = false;
+        Save();
+    }
+
     public static Settings Load()
     {
         Directory.CreateDirectory(DataDir); // log.txt is appended here before settings are ever saved

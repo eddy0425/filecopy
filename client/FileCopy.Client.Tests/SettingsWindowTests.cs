@@ -43,4 +43,20 @@ public class SettingsTests
         Assert.Equal("secret-token-0123456789", loaded.GetToken());
         Assert.False(File.Exists(Path.Combine(Settings.DataDir, "settings.json.tmp")));
     }
+
+    [Fact]
+    public void ResetServer_ForgetsTokenAndLock_KeepsTheRest()
+    {
+        var s = new Settings { ServerUrl = "https://old.example.com", EquipmentId = "XZT1-DB1", ServerTotpEnabled = true };
+        s.SetToken("secret-token-0123456789");
+        s.Save();
+
+        s.ResetServer();
+
+        var loaded = Settings.Load();
+        Assert.Equal("", loaded.GetToken());
+        Assert.False(loaded.ServerTotpEnabled);
+        Assert.Equal("https://old.example.com", loaded.ServerUrl);
+        Assert.Equal("XZT1-DB1", loaded.EquipmentId);
+    }
 }
