@@ -63,7 +63,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/eddy0425/filecopy/refs/heads
 - 自动下载源码并用 `golang` 镜像编译，安装到 `/root/data/docker_data/filecopy`，文件存放在其下的 `data/`
 - 首次安装自动生成 Token，结束时打印服务器地址和 Token，填入客户端即可
 - 选项写在 `bash` 前面，如 `PORT=9000 bash <(curl ...)`：
-  - `PORT=9000`：对外端口，默认 8080
+  - `PORT=9000`：对外端口，默认 8240
   - `BIND=127.0.0.1`：只监听本机，配合 Caddy 提供 HTTPS（见下文）
   - `GO_IMAGE=...`：Docker Hub 访问慢时换成镜像源里的 golang 镜像
 - 升级：重新运行同一条命令，配置和数据保留
@@ -118,7 +118,7 @@ files.example.com {
 }
 ```
 
-此时把 `config.json` 里的 `listen` 改成 `127.0.0.1:8080`，只让 Caddy 访问；Docker 部署则不改 `config.json`，用 `BIND=127.0.0.1` 重新运行安装命令。
+此时把 `config.json` 里的 `listen` 改成 `127.0.0.1:8080`，只让 Caddy 访问。Docker 部署则不改 `config.json`：用 `BIND=127.0.0.1` 重新运行安装命令，并把 `reverse_proxy` 改成 `127.0.0.1:8240`（或你指定的 `PORT`）。
 
 ## 客户端
 
@@ -140,7 +140,7 @@ dotnet build -c Release
 ### 使用
 
 1. 首次启动会打开设置窗口，填写：
-   - **服务器地址**：如 `https://files.example.com` 或 `http://1.2.3.4:8080`
+   - **服务器地址**：如 `https://files.example.com` 或 `http://1.2.3.4:8240`
    - **Token**：与服务端 `config.json` 中一致
    - **本地保留文件夹**："保留在本机" 的文件存放在这里（默认 `文档\FileCopy\data`；如果 "文档" 已被 OneDrive 接管同步，建议改到 OneDrive 之外的位置，避免两边同步互相干扰）
    - **设备 ID**：用于区分不同电脑的备份，如 `XZT1-CB`（不用备份可留空）

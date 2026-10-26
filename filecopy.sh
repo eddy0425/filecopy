@@ -5,7 +5,7 @@
 #   bash <(curl -fsSL https://raw.githubusercontent.com/eddy0425/filecopy/refs/heads/main/filecopy.sh)
 #                                 # 一键安装 / 升级，无需克隆仓库，自动下载源码
 #   bash filecopy.sh              # 在仓库根目录（与 server/ 同级）运行，使用本地代码
-#   PORT=9000 bash filecopy.sh    # 指定对外端口，默认 8080
+#   PORT=9000 bash filecopy.sh    # 指定对外端口，默认 8240
 #   BIND=127.0.0.1 bash filecopy.sh  # 只监听本机，前面用 Caddy / Nginx 反代 HTTPS
 #
 # 二进制来源（按顺序）：
@@ -23,7 +23,7 @@
 set -euo pipefail
 
 APP_DIR=/root/data/docker_data/filecopy
-PORT="${PORT:-8080}"
+PORT="${PORT:-8240}"
 BIND="${BIND:-0.0.0.0}"
 GO_IMAGE="${GO_IMAGE:-golang:1.23-alpine}"
 REPO_TARBALL="${REPO_TARBALL:-https://github.com/eddy0425/filecopy/archive/refs/heads/main.tar.gz}"

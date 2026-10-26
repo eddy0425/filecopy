@@ -20,7 +20,7 @@
 
         <TextBlock Text="服务器地址" VerticalAlignment="Center" Margin="0,5,10,5" />
         <TextBox x:Name="ServerUrlBox" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,5" Padding="3"
-                 ToolTip="例如 https://files.example.com 或 http://1.2.3.4:8080" />
+                 ToolTip="例如 https://files.example.com 或 http://1.2.3.4:8240" />
 
         <TextBlock Grid.Row="1" Text="Token" VerticalAlignment="Center" Margin="0,5,10,5" />
         <PasswordBox x:Name="TokenBox" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,5" Padding="3" />
