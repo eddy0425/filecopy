@@ -77,6 +77,29 @@ public sealed class ServerApiTests : IDisposable
         var wrong = Enumerable.Range(0, 10).Select(i => $"{i}{i}{i}{i}{i}{i}").First(c => !valid.Contains(c));
         Assert.False(await api.VerifyTotpAsync(wrong));
         Assert.True(await api.VerifyTotpAsync(Totp(secret, now)));
+        // Each code works once (it may just have been used to log in to the control panel).
+        await Assert.ThrowsAsync<TotpCodeUsedException>(() => api.VerifyTotpAsync(Totp(secret, now)));
+    }
+
+    [Fact]
+    public async Task SetEquipmentId_AppliesToFollowingRequests()
+    {
+        Assert.Equal(TestServer.EquipmentId, (await _api.PingAsync()).EquipmentId);
+        _api.SetEquipmentId("车间 2 号机");
+        Assert.Equal("车间 2 号机", (await _api.PingAsync()).EquipmentId); // non-ASCII survives the header encoding
+    }
+
+    [Fact]
+    public async Task PausedServer_TransfersFailWithoutRetrying()
+    {
+        using var server = new TestServer(new { paused = true });
+        server.Put("a.bin", "data");
+        using var api = new ServerApi(server.Url, TestServer.Token, TestServer.EquipmentId);
+        var retries = 0;
+        await Assert.ThrowsAsync<ServerPausedException>(() =>
+            api.DownloadRangeAsync("a.bin", 0, 4, default, (_, _) => retries++).T());
+        Assert.Equal(0, retries);
+        await Assert.ThrowsAsync<ServerPausedException>(() => api.UploadAsync(LocalFile("p.bin", 10), "p.bin", 0, null, default).T());
     }
 
     [Fact]

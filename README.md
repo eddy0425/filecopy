@@ -125,7 +125,9 @@ files.example.com {
 }
 ```
 
-此时把 `config.json` 里的 `listen` 改成 `127.0.0.1:8080`，只让 Caddy 访问。Docker 部署则不改 `config.json`：用 `BIND=127.0.0.1` 重新运行安装命令，并把 `reverse_proxy` 改成 `127.0.0.1:8240`（或你指定的 `PORT`）。
+此时把 `config.json` 里的 `listen` 改成 `127.0.0.1:8080`，只让 Caddy 访问。Docker 部署则不改 `config.json`：用 `BIND=127.0.0.1` 重新运行安装命令，并把 `reverse_proxy` 改成 `127.0.0.1:8240`（或你指定的 `PORT`）；脚本会让服务端信任经 Docker 网桥转发的 `X-Forwarded-For`，面板显示的仍是访问者的真实 IP。
+
+反向代理不在同一台机器、而是从内网地址访问服务端时，在 `config.json` 中加上 `"trustProxy": true`，否则面板显示和失败锁定都按代理的 IP 计算。不要在服务端直接对外（没有反向代理）时开启：内网中任何人都能伪造 IP，绕过失败锁定。
 
 ## 控制面板
 

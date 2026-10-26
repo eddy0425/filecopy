@@ -34,6 +34,9 @@ func (s *Server) clientAPI(next http.HandlerFunc) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		// Read the generation before the switch: setPaused stores the flag first and then bumps the
+		// generation, so a request passing the check while connections are being cut is still cut.
+		gen := s.state.gen.Load()
 		if s.state.paused() {
 			http.Error(w, "connections paused", http.StatusServiceUnavailable)
 			return
@@ -44,8 +47,7 @@ func (s *Server) clientAPI(next http.HandlerFunc) http.Handler {
 			http.Error(w, "equipment id required", http.StatusBadRequest)
 			return
 		}
-		id = s.state.touch(id, clientIP(r))
-		gen := s.state.gen.Load()
+		id = s.state.touch(id, s.clientIP(r))
 		mw := &meteredWriter{ResponseWriter: w, s: s, id: id, gen: gen}
 		if r.Body != nil {
 			r.Body = &meteredBody{ReadCloser: r.Body, s: s, id: id, gen: gen}
@@ -93,18 +95,20 @@ func (m *meteredBody) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// clientIP is the peer address; behind a local reverse proxy (Caddy / Nginx on the same
-// host), the address it appended to X-Forwarded-For.
-func clientIP(r *http.Request) string {
+// clientIP is the peer address; behind a local reverse proxy (Caddy / Nginx on the same host), the
+// address it appended to X-Forwarded-For. Private peers (the Docker bridge, 172.x) are trusted only
+// with trustProxy: otherwise anyone on the LAN could pick an address and dodge the login lockout.
+// Only valid addresses are taken: the result is shown in the panel.
+func (s *Server) clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || s.trustProxy && ip.IsPrivate()) {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 			parts := strings.Split(xff, ",")
-			if last := strings.TrimSpace(parts[len(parts)-1]); last != "" {
-				return last
+			if fwd := net.ParseIP(strings.TrimSpace(parts[len(parts)-1])); fwd != nil {
+				return fwd.String()
 			}
 		}
 	}
@@ -127,14 +131,12 @@ func (s *Server) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	ip := clientIP(r)
+	ip := s.clientIP(r)
 	if s.limiter.blocked(ip) {
 		http.Error(w, "too many attempts", http.StatusTooManyRequests)
 		return
 	}
-	if !s.state.verifyTOTP(secret, req.Code) {
-		s.limiter.fail(ip)
-		http.Error(w, "wrong code", http.StatusForbidden)
+	if !s.checkCode(w, ip, secret, req.Code, http.StatusForbidden, "wrong code") {
 		return
 	}
 	s.limiter.success(ip)

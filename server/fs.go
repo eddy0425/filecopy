@@ -10,8 +10,11 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const uploadDirName = ".uploads"
@@ -36,7 +39,72 @@ func cleanRel(p string) (string, error) {
 	if isInternal(first) || strings.ContainsRune(rel, 0) {
 		return "", errBadPath
 	}
+	if runtime.GOOS == "windows" && !windowsSafe(rel) {
+		return "", errBadPath
+	}
 	return rel, nil
+}
+
+// isShortName reports whether a segment has the 8.3 alias form ("FILECO~1", "REPORT~1.TXT"): at
+// most 8 characters ending in "~<digits>", plus an extension of at most 3. Long names that merely
+// end in "~<digits>" ("Backup~2023") never are; names of this form are checked on disk by notAlias.
+func isShortName(part string) bool {
+	stem, ext, _ := strings.Cut(part, ".")
+	// Characters, not bytes: the 8.3 limit is in the OEM code page, where a CJK character takes
+	// two bytes ("只读资~1" is a valid alias), so counting runes never lets an alias through.
+	if utf8.RuneCountInString(stem) > 8 || utf8.RuneCountInString(ext) > 3 || strings.Contains(ext, ".") {
+		return false
+	}
+	i := strings.LastIndexByte(stem, '~')
+	if i < 1 || i == len(stem)-1 {
+		return false
+	}
+	for _, c := range stem[i+1:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// windowsSafe rejects names Windows would resolve to a different item: it strips trailing dots and
+// spaces ("A." is "A", ".filecopy." is ".filecopy"), and "name:stream" addresses an alternate data
+// stream. Otherwise checks on the cleaned path (read-only folders, internal dirs) could be bypassed.
+// 8.3 short names depend on what is on disk: see notAlias.
+func windowsSafe(rel string) bool {
+	if strings.ContainsRune(rel, ':') {
+		return false
+	}
+	for _, part := range strings.Split(rel, "/") {
+		if strings.HasSuffix(part, ".") || strings.HasSuffix(part, " ") {
+			return false
+		}
+	}
+	return true
+}
+
+// notAlias reports whether no segment of rel is the 8.3 short name of a different item ("FILECO~1"
+// for ".filecopy"). A segment of that form is fine when nothing has that name yet (creating it
+// makes a real name) or when it is the item's own name ("REPORT~1.TXT" saved under that name).
+func notAlias(root, rel string) bool {
+	if runtime.GOOS != "windows" {
+		return true
+	}
+	dir := root
+	for _, part := range strings.Split(rel, "/") {
+		next := filepath.Join(dir, part)
+		if isShortName(part) {
+			if _, err := os.Lstat(next); err != nil {
+				return errors.Is(err, fs.ErrNotExist) // nothing below exists either
+			}
+			entries, err := os.ReadDir(dir) // long names only
+			if err != nil || !slices.ContainsFunc(entries, func(e fs.DirEntry) bool { return strings.EqualFold(e.Name(), part) }) {
+				return false
+			}
+		}
+		dir = next
+	}
+	return true
 }
 
 // safeJoin maps a client path to an absolute path inside the data dir.
@@ -44,6 +112,9 @@ func (s *Server) safeJoin(p string) (string, string, error) {
 	rel, err := cleanRel(p)
 	if err != nil {
 		return "", "", err
+	}
+	if !notAlias(s.root, rel) {
+		return "", "", errBadPath
 	}
 	abs := filepath.Join(s.root, filepath.FromSlash(rel))
 	if !strings.HasPrefix(abs, s.root+string(filepath.Separator)) {
@@ -90,8 +161,14 @@ func (s *Server) handleTree(w http.ResponseWriter, r *http.Request) {
 			return nil
 		}
 		rel := filepath.ToSlash(strings.TrimPrefix(p, s.root+string(filepath.Separator)))
-		if isInternal(rel) {
-			return filepath.SkipDir
+		// Internal dirs, and names the file API would reject or map elsewhere (e.g. "a\b" on Linux):
+		// listing them would only offer entries that cannot be opened. Names read from the disk are
+		// never 8.3 aliases, so "REPORT~1.TXT" saved under that name is listed.
+		if c, err := cleanRel(rel); err != nil || c != rel {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		info, err := d.Info()
 		if err != nil {
@@ -159,7 +236,11 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if by == "" {
 		by = panelActor
 	}
-	if err := s.trash.put(abs, rel, by); err != nil {
+	var readOnly []string // clients cannot delete read-only folders; the panel's deletes keep them for a restore
+	if !isClient(r) {
+		readOnly = s.state.readOnlyUnder(rel)
+	}
+	if err := s.trash.put(abs, rel, by, readOnly); err != nil {
 		httpFsError(w, err)
 		return
 	}

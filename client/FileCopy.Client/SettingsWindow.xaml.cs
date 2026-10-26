@@ -48,16 +48,9 @@ public partial class SettingsWindow : Window
             MessageBox.Show(this, "请选择本地保留文件夹（完整路径）。", "FileCopy");
             return;
         }
-        if (equipmentId.Length == 0 || equipmentId.Length > 64)
+        if (EquipmentIdError(equipmentId) is { } error)
         {
-            MessageBox.Show(this, "请填写设备 ID（例如 XZT1-DB1，最多 64 个字符），服务器用它区分设备。", "FileCopy");
-            return;
-        }
-        // ".7z" is appended to form the archive name, so a trailing dot is fine, but reserved names stay reserved.
-        if (equipmentId.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0
-            || Regex.IsMatch(equipmentId, @"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$", RegexOptions.IgnoreCase))
-        {
-            MessageBox.Show(this, "设备 ID 不能包含 / \\ : * ? \" < > | 等字符，也不能是 CON、NUL 等系统保留名。", "FileCopy");
+            MessageBox.Show(this, error, "FileCopy");
             return;
         }
 
@@ -68,5 +61,19 @@ public partial class SettingsWindow : Window
         _settings.AutoConnect = AutoConnectBox.IsChecked == true;
         _settings.Save();
         DialogResult = true;
+    }
+
+    /// <summary>Why <paramref name="id"/> cannot be an EquipmentId, or null. The server applies the same rules.</summary>
+    public static string? EquipmentIdError(string id)
+    {
+        // Characters as the server counts them: an emoji is one, not two UTF-16 units.
+        var length = id.EnumerateRunes().Count();
+        if (length == 0 || length > 64)
+            return "请填写设备 ID（例如 XZT1-DB1，最多 64 个字符），服务器用它区分设备。";
+        // ".7z" is appended to form the archive name, so a trailing dot is fine, but reserved names stay reserved.
+        if (id.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || id.Contains('\u007f')
+            || Regex.IsMatch(id, @"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$", RegexOptions.IgnoreCase))
+            return "设备 ID 不能包含 / \\ : * ? \" < > | 等字符，也不能是 CON、NUL 等系统保留名。";
+        return null;
     }
 }

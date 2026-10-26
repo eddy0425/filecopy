@@ -115,6 +115,7 @@ public sealed class ServerApi : IDisposable
         using var cts = WithTimeout(ct, 15);
         using var resp = await _http.PostAsJsonAsync("api/totp/verify", new { code }, cts.Token);
         if (resp.StatusCode == HttpStatusCode.Forbidden) return false;
+        if (resp.StatusCode == HttpStatusCode.Conflict) throw new TotpCodeUsedException();
         if (resp.StatusCode == HttpStatusCode.TooManyRequests)
             throw new InvalidOperationException("尝试次数过多，请 5 分钟后再试");
         EnsureOk(resp);
@@ -168,6 +169,8 @@ public sealed class ServerApi : IDisposable
                 using var req = new HttpRequestMessage(HttpMethod.Get, $"api/file?path={Q(path)}");
                 req.Headers.Range = new RangeHeaderValue(offset, offset + length - 1);
                 using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+                // Not EnsureOk: reading is never refused for a read-only folder, so a 403 is not that.
+                if (resp.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.ServiceUnavailable) EnsureOk(resp);
                 resp.EnsureSuccessStatusCode();
                 var buf = new byte[length];
                 await using var s = await resp.Content.ReadAsStreamAsync(cts.Token);
@@ -370,6 +373,9 @@ public sealed class UnauthorizedException(string message) : InvalidOperationExce
 
 /// <summary>The path is in a folder set read-only in the control panel (HTTP 403).</summary>
 public sealed class ReadOnlyFolderException() : IOException("只读文件夹，不能修改");
+
+/// <summary>The code is valid but was just used (e.g. to log in to the control panel); the next one is needed.</summary>
+public sealed class TotpCodeUsedException() : InvalidOperationException("该验证码刚刚已使用过，请等待验证器显示下一个验证码");
 
 /// <summary>The administrator has paused client connections (HTTP 503).</summary>
 public sealed class ServerPausedException() : InvalidOperationException("服务器已暂停连接");

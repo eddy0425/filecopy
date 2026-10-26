@@ -199,6 +199,10 @@ func (s *Server) handleUploadComplete(w http.ResponseWriter, r *http.Request) {
 	}
 	sess.file.Close()
 
+	if !notAlias(s.root, sess.rel) { // a long name created since init got this as its 8.3 alias
+		http.Error(w, errBadPath.Error(), http.StatusBadRequest)
+		return
+	}
 	abs := filepath.Join(s.root, filepath.FromSlash(sess.rel))
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		httpFsError(w, err)

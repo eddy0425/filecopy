@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -152,15 +153,21 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	ip := clientIP(r)
+	ip := s.clientIP(r)
 	if s.limiter.blocked(ip) {
 		http.Error(w, "too many attempts", http.StatusTooManyRequests)
 		return
 	}
 	secret := s.state.totpSecret()
-	if !s.checkAdminPassword(req.Password) || secret != "" && !s.state.verifyTOTP(secret, req.Code) {
+	if s.refuseUsedCode(w, secret, req.Code) {
+		return
+	}
+	if !s.checkAdminPassword(req.Password) {
 		s.limiter.fail(ip)
 		http.Error(w, "wrong password or code", http.StatusUnauthorized)
+		return
+	}
+	if secret != "" && !s.checkCode(w, ip, secret, req.Code, http.StatusUnauthorized, "wrong password or code") {
 		return
 	}
 	s.limiter.success(ip)
@@ -196,22 +203,28 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request, a adminC
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	ip := clientIP(r)
+	ip := s.clientIP(r)
 	if s.limiter.blocked(ip) {
 		http.Error(w, "too many attempts", http.StatusTooManyRequests)
 		return
 	}
+	if len([]rune(req.New)) < minPasswordLen { // before the code check, which would use up the code
+		http.Error(w, "password too short", http.StatusBadRequest)
+		return
+	}
 	secret := s.state.totpSecret()
-	if !s.checkAdminPassword(req.Old) || secret != "" && !s.state.verifyTOTP(secret, req.Code) {
+	if s.refuseUsedCode(w, secret, req.Code) {
+		return
+	}
+	if !s.checkAdminPassword(req.Old) {
 		s.limiter.fail(ip)
 		http.Error(w, "wrong password or code", http.StatusForbidden)
 		return
 	}
-	s.limiter.success(ip)
-	if len([]rune(req.New)) < minPasswordLen {
-		http.Error(w, "password too short", http.StatusBadRequest)
+	if secret != "" && !s.checkCode(w, ip, secret, req.Code, http.StatusForbidden, "wrong password or code") {
 		return
 	}
+	s.limiter.success(ip)
 	hash := hashPassword(req.New)
 	if err := s.state.update(func(st *persistedState) error { st.AdminPasswordHash = hash; return nil }); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -331,7 +344,20 @@ func (s *Server) handleDeviceDelete(w http.ResponseWriter, r *http.Request, _ ad
 
 // ---------- TOTP ----------
 
+// refuseIfTOTPEnabled: changing the secret needs the current code, i.e. disabling first; otherwise a
+// stolen session could enroll its own authenticator.
+func (s *Server) refuseIfTOTPEnabled(w http.ResponseWriter) bool {
+	if s.state.totpSecret() != "" {
+		http.Error(w, "totp already enabled", http.StatusConflict)
+		return true
+	}
+	return false
+}
+
 func (s *Server) handleTOTPSetup(w http.ResponseWriter, r *http.Request, a adminCtx) {
+	if s.refuseIfTOTPEnabled(w) {
+		return
+	}
 	secret := newTOTPSecret()
 	uri := totpURI(secret)
 	qr, err := encodeQR([]byte(uri))
@@ -347,7 +373,7 @@ func (s *Server) handleTOTPSetup(w http.ResponseWriter, r *http.Request, a admin
 
 func (s *Server) handleTOTPEnable(w http.ResponseWriter, r *http.Request, a adminCtx) {
 	var req struct{ Code string }
-	if !decodeJSON(w, r, &req) {
+	if !decodeJSON(w, r, &req) || s.refuseIfTOTPEnabled(w) {
 		return
 	}
 	s.sessions.mu.Lock()
@@ -357,7 +383,7 @@ func (s *Server) handleTOTPEnable(w http.ResponseWriter, r *http.Request, a admi
 		http.Error(w, "run setup first", http.StatusBadRequest)
 		return
 	}
-	if !s.state.verifyTOTP(secret, req.Code) {
+	if s.state.verifyTOTP(secret, req.Code) != totpOK {
 		http.Error(w, "wrong code", http.StatusForbidden)
 		return
 	}
@@ -376,15 +402,12 @@ func (s *Server) handleTOTPDisable(w http.ResponseWriter, r *http.Request, _ adm
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	ip := clientIP(r)
+	ip := s.clientIP(r)
 	if s.limiter.blocked(ip) {
 		http.Error(w, "too many attempts", http.StatusTooManyRequests)
 		return
 	}
-	secret := s.state.totpSecret()
-	if secret != "" && !s.state.verifyTOTP(secret, req.Code) {
-		s.limiter.fail(ip)
-		http.Error(w, "wrong code", http.StatusForbidden)
+	if secret := s.state.totpSecret(); secret != "" && !s.checkCode(w, ip, secret, req.Code, http.StatusForbidden, "wrong code") {
 		return
 	}
 	s.limiter.success(ip)
@@ -416,11 +439,27 @@ func (s *Server) handleTrashRestore(w http.ResponseWriter, r *http.Request, _ ad
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Two restores must not both pick the same free name (the second would fail as taken).
+	s.restoreMu.Lock()
+	defer s.restoreMu.Unlock()
 	if _, err := os.Lstat(abs); err == nil { // the original location is taken again
 		abs = restoredName(abs, s.now())
 		rel = filepath.ToSlash(strings.TrimPrefix(abs, s.root+string(filepath.Separator)))
 	}
+	// Read-only again before the item is back, so clients cannot write to it in between.
+	var ro []string
+	for _, p := range it.ReadOnly {
+		ro = append(ro, strings.TrimSuffix(rel+"/"+p, "/"))
+	}
+	added, err := s.state.addReadOnly(ro)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if err := s.trash.restore(req.ID, abs); err != nil {
+		if uerr := s.state.removeReadOnly(added); uerr != nil {
+			log.Printf("undo read-only after failed restore: %v", uerr)
+		}
 		httpFsError(w, err)
 		return
 	}
@@ -460,7 +499,10 @@ func (s *Server) handleReadOnly(w http.ResponseWriter, r *http.Request, _ adminC
 		http.Error(w, "not a folder", http.StatusBadRequest)
 		return
 	}
-	if err := s.state.setReadOnly(rel, req.ReadOnly); err != nil {
+	if err := s.state.setReadOnly(rel, req.ReadOnly); errors.Is(err, errReadOnlyElsewhere) {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	} else if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

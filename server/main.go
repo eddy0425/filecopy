@@ -22,18 +22,24 @@ type Config struct {
 	AdminPassword string `json:"adminPassword,omitempty"`
 	TLSCert       string `json:"tlsCert,omitempty"`
 	TLSKey        string `json:"tlsKey,omitempty"`
+	// TrustProxy takes X-Forwarded-For from private addresses too, e.g. a reverse proxy reaching a
+	// Docker container through the bridge (172.x). Also set by FILECOPY_TRUST_PROXY=1.
+	TrustProxy bool `json:"trustProxy,omitempty"`
 }
 
 type Server struct {
 	root          string // absolute data dir
 	token         string
 	adminPassword string
+	trustProxy    bool // see Config.TrustProxy
 	now           func() time.Time
 	uploads       *uploadManager
 	state         *stateStore
 	trash         *trashStore
 	sessions      *sessionStore
 	limiter       *failLimiter
+
+	restoreMu sync.Mutex // trash restores: picking a free name and moving there is one step
 
 	diskMu sync.Mutex
 	disk   diskStatus
@@ -118,6 +124,7 @@ func main() {
 		log.Fatalf("init: %v", err)
 	}
 	s.adminPassword = cfg.AdminPassword
+	s.trustProxy = cfg.TrustProxy || os.Getenv("FILECOPY_TRUST_PROXY") == "1"
 	go s.maintain()
 
 	srv := &http.Server{

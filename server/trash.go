@@ -5,7 +5,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -24,6 +26,9 @@ type TrashItem struct {
 	Size      int64  `json:"size"`
 	DeletedAt int64  `json:"deletedAt"` // unix ms
 	DeletedBy string `json:"deletedBy"` // EquipmentId, or the panel
+	// Read-only folders at or under Path when deleted, relative to it ("" = the item itself);
+	// set again on restore.
+	ReadOnly []string `json:"readOnly,omitempty"`
 }
 
 type trashStore struct {
@@ -41,7 +46,7 @@ func (t *trashStore) itemDir(id string) (string, error) {
 }
 
 // put moves abs (at rel) into the recycle bin.
-func (t *trashStore) put(abs, rel, by string) error {
+func (t *trashStore) put(abs, rel, by string, readOnly []string) error {
 	info, err := os.Lstat(abs)
 	if err != nil {
 		return err
@@ -53,7 +58,7 @@ func (t *trashStore) put(abs, rel, by string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	item := TrashItem{ID: id, Path: rel, IsDir: info.IsDir(), Size: treeSize(abs), DeletedAt: t.now().UnixMilli(), DeletedBy: by}
+	item := TrashItem{ID: id, Path: rel, IsDir: info.IsDir(), Size: treeSize(abs), DeletedAt: t.now().UnixMilli(), DeletedBy: by, ReadOnly: readOnly}
 	meta, _ := json.Marshal(item)
 	if err := os.WriteFile(filepath.Join(dir, "meta.json"), meta, 0o644); err != nil {
 		os.RemoveAll(dir)
@@ -91,6 +96,9 @@ func (t *trashStore) get(id string) (TrashItem, error) {
 	if err := json.Unmarshal(data, &it); err != nil {
 		return it, errTrashID
 	}
+	if _, err := os.Lstat(filepath.Join(dir, "item")); err != nil {
+		return it, errTrashID // restored already, only the cleanup failed: purge removes the leftover
+	}
 	it.ID = id
 	return it, nil
 }
@@ -104,10 +112,32 @@ func (t *trashStore) restore(id, abs string) error {
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		return err
 	}
-	if err := os.Rename(filepath.Join(dir, "item"), abs); err != nil {
+	if err := renameNoReplace(filepath.Join(dir, "item"), abs); err != nil {
 		return err
 	}
-	return os.RemoveAll(dir)
+	// The item is back: a leftover entry must not make the caller treat the restore as failed.
+	if err := os.RemoveAll(dir); err != nil {
+		log.Printf("trash: remove %s after restore: %v", dir, err)
+	}
+	return nil
+}
+
+// renameNoReplace moves src to dst, failing with fs.ErrExist when dst appeared after the caller
+// checked it (a client upload): os.Rename would silently replace that file. A file is hard-linked
+// and then unlinked, which fails if dst exists; filesystems without hard links fall back to a
+// rename. A directory is renamed: that fails onto anything but an empty directory.
+func renameNoReplace(src, dst string) error {
+	if info, err := os.Lstat(src); err == nil && info.Mode().IsRegular() {
+		err := os.Link(src, dst)
+		if err == nil {
+			os.Remove(src) // the trash entry is removed afterwards anyway
+			return nil
+		}
+		if errors.Is(err, fs.ErrExist) {
+			return err
+		}
+	}
+	return os.Rename(src, dst)
 }
 
 func (t *trashStore) remove(id string) error {
@@ -142,7 +172,7 @@ func (t *trashStore) purge() {
 		it, err := t.get(d.Name())
 		if err == nil && it.DeletedAt < cutoff.UnixMilli() {
 			os.RemoveAll(filepath.Join(t.dir, d.Name()))
-		} else if err != nil { // no readable meta: fall back to the directory's age
+		} else if err != nil { // no readable meta or no item: fall back to the directory's age
 			if info, err := d.Info(); err == nil && info.ModTime().Before(cutoff) {
 				os.RemoveAll(filepath.Join(t.dir, d.Name()))
 			}
@@ -158,11 +188,18 @@ func (t *trashStore) usage() int64 {
 	return n
 }
 
-// restoredName returns "dir/name (restored 20260102-150405).ext".
+// restoredName returns a free "dir/name (restored 20260102-150405).ext", adding " 2", " 3", ...
+// when several items are restored to the same place within a second.
 func restoredName(abs string, now time.Time) string {
 	ext := filepath.Ext(abs)
-	base := strings.TrimSuffix(abs, ext)
-	return base + " (restored " + now.Format("20060102-150405") + ")" + ext
+	stem := strings.TrimSuffix(abs, ext) + " (restored " + now.Format("20060102-150405")
+	name := stem + ")" + ext
+	for i := 2; ; i++ {
+		if _, err := os.Lstat(name); err != nil { // free, or an error the rename will report
+			return name
+		}
+		name = fmt.Sprintf("%s %d)%s", stem, i, ext)
+	}
 }
 
 // treeSize is the total size of the regular files at or under abs.

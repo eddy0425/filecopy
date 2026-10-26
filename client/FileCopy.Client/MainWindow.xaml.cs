@@ -82,10 +82,15 @@ public partial class MainWindow : Window
         try
         {
             var prompt = "请输入二步验证码（验证器 App 中的 6 位数字）：";
+            // E.g. started offline into the tray: the failed connection is not retried on its own.
+            // Connects while the code is being typed: the prompt shows at once, and a slow first sync
+            // has less time to outlast the code than when connecting after it was entered.
+            var connecting = _sync == null && _settings.GetToken().Length > 0 ? ConnectAsync() : Task.CompletedTask;
             while (true)
             {
                 var code = InputDialog.Show(null, "FileCopy 已锁定", prompt);
                 if (code == null) return false;
+                await connecting;
                 var sync = _sync;
                 if (sync == null)
                 {
@@ -100,6 +105,11 @@ public partial class MainWindow : Window
                         _hiddenToTray = false;
                         return true;
                     }
+                }
+                catch (TotpCodeUsedException ex)
+                {
+                    prompt = ex.Message + "：";
+                    continue;
                 }
                 catch (Exception ex)
                 {

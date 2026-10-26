@@ -6,11 +6,15 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -74,17 +78,23 @@ type stateStore struct {
 	path string
 	now  func() time.Time
 
-	mu       sync.Mutex
-	st       persistedState
-	dirty    bool  // traffic counters changed since the last save
-	lastStep int64 // last TOTP time step accepted, so a code cannot be replayed
+	mu         sync.Mutex
+	st         persistedState
+	dirty      bool           // traffic counters changed since the last save
+	usedSteps  map[int64]bool // TOTP time steps already accepted, so a code cannot be replayed
+	usedSecret string         // the secret usedSteps belong to
+
+	// foldCase: the filesystem ignores case, so "A" and "a" are the same folder when following
+	// renames and deletes of read-only folders. Enforcement always ignores case (the Windows
+	// client does), which at worst over-restricts on case-sensitive filesystems.
+	foldCase bool
 
 	// gen changes whenever client connections are cut; in-flight transfers compare against it.
 	gen atomic.Int64
 }
 
 func loadState(path string, now func() time.Time) (*stateStore, error) {
-	s := &stateStore{path: path, now: now}
+	s := &stateStore{path: path, now: now, foldCase: runtime.GOOS == "windows" || runtime.GOOS == "darwin"}
 	data, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
@@ -265,6 +275,10 @@ var (
 	errNoDevice  = errors.New("device not found")
 	errIDTaken   = errors.New("equipment id already in use")
 	errBadDevice = errors.New("invalid equipment id")
+
+	// errReadOnlyElsewhere: unsetting a folder that stays read-only through another entry, e.g. "Docs"
+	// for "docs" (enforcement ignores case) or a read-only ancestor.
+	errReadOnlyElsewhere = errors.New("still read-only through another folder")
 )
 
 // resetTraffic zeroes the counters of one device, or of all when id is "".
@@ -316,6 +330,10 @@ func (s *stateStore) renameDevice(id, newID string) error {
 		if st.Devices[newID] != nil {
 			return errIDTaken
 		}
+		// newID may still be sent by a machine renamed away from it; only renaming back to it is fine.
+		if target, pending := st.Renames[newID]; pending && target != id {
+			return errIDTaken
+		}
 		delete(st.Devices, id)
 		st.Devices[newID] = d
 		for old, n := range st.Renames {
@@ -329,9 +347,13 @@ func (s *stateStore) renameDevice(id, newID string) error {
 	})
 }
 
-// validEquipmentID: the client also uses the ID as a Windows file name (its backup archive).
+var reservedName = regexp.MustCompile(`(?i)^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$`)
+
+// validEquipmentID: the client also uses the ID as a Windows file name (its backup archive),
+// so the same rules as its settings window apply.
 func validEquipmentID(id string) bool {
-	if id == "" || len(id) > 64 || strings.ContainsAny(id, `/\:*?"<>|`) {
+	if id == "" || utf8.RuneCountInString(id) > 64 || !utf8.ValidString(id) || strings.ContainsAny(id, `/\:*?"<>|`) ||
+		reservedName.MatchString(id) {
 		return false
 	}
 	for _, r := range id {
@@ -344,9 +366,24 @@ func validEquipmentID(id string) bool {
 
 // ---------- read-only folders ----------
 
-func hasPathPrefix(rel, dir string) bool {
-	r, d := strings.ToLower(rel), strings.ToLower(dir)
-	return r == d || strings.HasPrefix(r, d+"/")
+// hasPathPrefix reports whether rel is dir or inside it, ignoring case.
+func hasPathPrefix(rel, dir string) bool { return pathPrefix(rel, dir, true) }
+
+func pathPrefix(rel, dir string, fold bool) bool {
+	if fold {
+		rel, dir = strings.ToLower(rel), strings.ToLower(dir)
+	}
+	return rel == dir || strings.HasPrefix(rel, dir+"/")
+}
+
+// subPath returns what follows dir in rel, which pathPrefix matched ("" when rel is dir). It counts
+// segments rather than bytes: with case folding the two may differ in length (e.g. "K" and "k").
+func subPath(rel, dir string) string {
+	n := strings.Count(dir, "/") + 2
+	if parts := strings.SplitN(rel, "/", n); len(parts) == n {
+		return parts[n-1]
+	}
+	return ""
 }
 
 // isReadOnly reports whether rel is a read-only folder or inside one.
@@ -382,15 +419,20 @@ func (s *stateStore) readOnlyFolders() []string {
 
 func (s *stateStore) setReadOnly(rel string, ro bool) error {
 	return s.update(func(st *persistedState) error {
+		// Enforcement ignores case, so "Docs" and "docs" protect the same paths: unsetting a listed
+		// folder takes its case variants along, or neither could ever be unset.
+		fold := s.foldCase || !ro && slices.Contains(st.ReadOnlyFolders, rel)
 		list := st.ReadOnlyFolders[:0:0]
 		for _, f := range st.ReadOnlyFolders {
-			if !strings.EqualFold(f, rel) {
+			if f != rel && !(fold && strings.EqualFold(f, rel)) {
 				list = append(list, f)
 			}
 		}
 		if ro {
 			list = append(list, rel)
 			sort.Strings(list)
+		} else if slices.ContainsFunc(list, func(f string) bool { return hasPathPrefix(rel, f) }) {
+			return errReadOnlyElsewhere
 		}
 		st.ReadOnlyFolders = list
 		return nil
@@ -403,11 +445,15 @@ func (s *stateStore) movedPath(from, to string) error {
 	return s.update(func(st *persistedState) error {
 		list := st.ReadOnlyFolders[:0:0]
 		for _, f := range st.ReadOnlyFolders {
-			if hasPathPrefix(f, from) {
+			if pathPrefix(f, from, s.foldCase) {
 				if to == "" {
 					continue
 				}
-				f = to + f[len(from):]
+				if sub := subPath(f, from); sub != "" {
+					f = to + "/" + sub
+				} else {
+					f = to
+				}
 			}
 			list = append(list, f)
 		}
@@ -415,6 +461,53 @@ func (s *stateStore) movedPath(from, to string) error {
 		st.ReadOnlyFolders = list
 		return nil
 	})
+}
+
+// addReadOnly marks several folders read-only in one save and returns the ones that were not
+// already, so a failed operation can take back exactly those.
+func (s *stateStore) addReadOnly(rels []string) ([]string, error) {
+	if len(rels) == 0 {
+		return nil, nil
+	}
+	var added []string
+	err := s.update(func(st *persistedState) error {
+		for _, rel := range rels {
+			if !slices.ContainsFunc(st.ReadOnlyFolders, func(f string) bool {
+				return f == rel || s.foldCase && strings.EqualFold(f, rel)
+			}) {
+				st.ReadOnlyFolders = append(st.ReadOnlyFolders, rel)
+				added = append(added, rel)
+			}
+		}
+		sort.Strings(st.ReadOnlyFolders)
+		return nil
+	})
+	return added, err
+}
+
+// removeReadOnly undoes addReadOnly.
+func (s *stateStore) removeReadOnly(rels []string) error {
+	if len(rels) == 0 {
+		return nil
+	}
+	return s.update(func(st *persistedState) error {
+		st.ReadOnlyFolders = slices.DeleteFunc(st.ReadOnlyFolders, func(f string) bool { return slices.Contains(rels, f) })
+		return nil
+	})
+}
+
+// readOnlyUnder returns the read-only folders at or under rel, relative to rel ("" for rel itself),
+// so they can be kept with the item in the recycle bin.
+func (s *stateStore) readOnlyUnder(rel string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []string
+	for _, f := range s.st.ReadOnlyFolders {
+		if pathPrefix(f, rel, s.foldCase) {
+			out = append(out, subPath(f, rel))
+		}
+	}
+	return out
 }
 
 func statePath(root string) string { return filepath.Join(root, internalDirName, "state.json") }

@@ -118,6 +118,17 @@ func codeAt(t *testing.T, secret string, now time.Time) string {
 	return totpCode(key, now.Unix()/totpStep)
 }
 
+// wrongCode returns a code matching none of the steps accepted at now.
+func wrongCode(t *testing.T, secret string, now time.Time) string {
+	for _, c := range []string{"000000", "999999", "123456"} {
+		if matchTOTP(secret, c, now) < 0 {
+			return c
+		}
+	}
+	t.Fatal("no wrong code")
+	return ""
+}
+
 func putFile(t *testing.T, s *Server, rel, content string) {
 	t.Helper()
 	p := filepath.Join(s.root, filepath.FromSlash(rel))
@@ -151,11 +162,20 @@ func TestTOTPVectors(t *testing.T) {
 
 	st, _ := loadState(filepath.Join(t.TempDir(), "s.json"), func() time.Time { return now })
 	code := codeAt(t, secret, now)
-	if !st.verifyTOTP(secret, code) || st.verifyTOTP(secret, code) {
+	if st.verifyTOTP(secret, code) != totpOK || st.verifyTOTP(secret, code) != totpReused {
 		t.Error("code should be accepted once, then rejected as a replay")
 	}
-	if st.verifyTOTP(secret, codeAt(t, secret, now.Add(-30*time.Second))) {
-		t.Error("an older step after a newer one should be rejected")
+	// The previous step's code (within the skew) is a different code: usable once as well.
+	if prev := codeAt(t, secret, now.Add(-30*time.Second)); st.verifyTOTP(secret, prev) != totpOK || st.verifyTOTP(secret, prev) != totpReused {
+		t.Error("previous-step code should be accepted once")
+	}
+	if st.verifyTOTP(secret, wrongCode(t, secret, now)) != totpWrong {
+		t.Error("wrong code accepted")
+	}
+	// A new secret (TOTP disabled and enabled again) is not blocked by steps used with the old one.
+	other := newTOTPSecret()
+	if st.verifyTOTP(other, codeAt(t, other, now)) != totpOK {
+		t.Error("new secret rejected as replay")
 	}
 }
 
@@ -448,9 +468,10 @@ func TestClientTOTPVerify(t *testing.T) {
 		return do(t, ts, "POST", "/api/totp/verify", strings.NewReader(`{"code":"`+code+`"}`))
 	}
 	status(t, verify(codeAt(t, secret, clock.now())), http.StatusNoContent)
-	status(t, verify(codeAt(t, secret, clock.now())), http.StatusForbidden) // replay
-	for i := 1; i < maxFailures; i++ {
-		status(t, verify("000000"), http.StatusForbidden)
+	status(t, verify(codeAt(t, secret, clock.now())), http.StatusConflict) // replay: not a failed attempt
+	wrong := wrongCode(t, secret, clock.now())
+	for i := 0; i < maxFailures; i++ {
+		status(t, verify(wrong), http.StatusForbidden)
 	}
 	clock.add(30 * time.Second)
 	status(t, verify(codeAt(t, secret, clock.now())), http.StatusTooManyRequests)
@@ -607,4 +628,17 @@ func TestReadOnlyFolders(t *testing.T) {
 	if got := s.state.readOnlyFolders(); len(got) != 0 {
 		t.Fatalf("read-only after delete = %v", got)
 	}
+}
+
+// Unsetting a folder that stays read-only through another entry is refused, not a silent no-op.
+func TestReadOnlyUnsetStillEnforced(t *testing.T) {
+	s, ts := newTestServer(t)
+	a := mustLogin(t, ts)
+	putFile(t, s, "A/x.txt", "x")
+	status(t, a.do("POST", "/admin/api/readonly", `{"path":"A","readOnly":true}`), http.StatusNoContent)
+	s.state.foldCase = false // Linux: "a" is another folder, still read-only through "A"
+	status(t, a.do("POST", "/admin/api/readonly", `{"path":"a","readOnly":false}`), http.StatusConflict)
+	status(t, a.do("POST", "/admin/api/readonly", `{"path":"A/sub","readOnly":false}`), http.StatusConflict) // read-only ancestor
+	status(t, a.do("POST", "/admin/api/readonly", `{"path":"A","readOnly":false}`), http.StatusNoContent)
+	status(t, a.do("POST", "/admin/api/readonly", `{"path":"a","readOnly":false}`), http.StatusNoContent)
 }

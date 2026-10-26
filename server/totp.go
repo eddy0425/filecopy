@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -62,19 +63,74 @@ func matchTOTP(secret, code string, now time.Time) int64 {
 	return -1
 }
 
+type totpResult int
+
+const (
+	totpOK     totpResult = iota
+	totpWrong             // counts as a failed attempt
+	totpReused            // a valid code that was already used (e.g. to unlock a client): wait for the next one
+)
+
 // verifyTOTP checks a code against secret; each time step is accepted only once.
-func (s *stateStore) verifyTOTP(secret, code string) bool {
+func (s *stateStore) verifyTOTP(secret, code string) totpResult {
+	step := matchTOTP(secret, code, s.now())
+	if step < 0 {
+		return totpWrong
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.usedSecret != secret || s.usedSteps == nil { // a new secret (TOTP re-enabled): old steps don't count
+		s.usedSecret, s.usedSteps = secret, map[int64]bool{}
+	}
+	// Each step is used once. A set rather than "the latest step": a code for the next step (a phone
+	// clock running ahead) must not block the current code entered on another device.
+	if s.usedSteps[step] {
+		return totpReused
+	}
+	cur := s.now().Unix() / totpStep
+	for k := range s.usedSteps {
+		if k < cur-totpSkew {
+			delete(s.usedSteps, k) // no longer accepted anyway
+		}
+	}
+	s.usedSteps[step] = true
+	return totpOK
+}
+
+// codeUsed reports whether code is valid for secret but already used, without using it up.
+func (s *stateStore) codeUsed(secret, code string) bool {
 	step := matchTOTP(secret, code, s.now())
 	if step < 0 {
 		return false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if step <= s.lastStep {
-		return false // replayed
+	return s.usedSecret == secret && s.usedSteps[step]
+}
+
+// refuseUsedCode answers a used code before the password is checked: answering it only after a
+// correct password would tell whether the password was correct.
+func (s *Server) refuseUsedCode(w http.ResponseWriter, secret, code string) bool {
+	if secret == "" || !s.state.codeUsed(secret, code) {
+		return false
 	}
-	s.lastStep = step
+	http.Error(w, "code already used", http.StatusConflict)
 	return true
+}
+
+// checkCode verifies a TOTP code for a login-like request, applying the per-IP lockout.
+// It writes the error response and returns false when the request must stop.
+func (s *Server) checkCode(w http.ResponseWriter, ip, secret, code string, wrongStatus int, wrongMsg string) bool {
+	switch s.state.verifyTOTP(secret, code) {
+	case totpOK:
+		return true
+	case totpReused:
+		http.Error(w, "code already used", http.StatusConflict)
+	default:
+		s.limiter.fail(ip)
+		http.Error(w, wrongMsg, wrongStatus)
+	}
+	return false
 }
 
 // ---------- failed attempt limiting ----------

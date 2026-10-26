@@ -128,6 +128,44 @@ public sealed class SyncServiceTests : IDisposable
         Assert.False(server.Exists("rw.txt"));
     }
 
+    [Fact]
+    public async Task ReadOnlyFolder_KeepWithEditedCopy_RestoresServerVersion_AndUploadsFail()
+    {
+        using var server = new TestServer(new { readOnlyFolders = new[] { "ro" } });
+        server.Put("ro/a.txt", "server");
+        var c = new TestClient(server);
+        _cleanup.Add(c);
+        await c.Sync.StartAsync().T();
+        c.Write("ro/a.txt", "never synced local copy"); // e.g. copied into the mirror folder by hand
+
+        await c.Sync.KeepAsync("ro/a.txt", isDir: false).T();
+        Assert.Equal("server", c.Read("ro/a.txt"));
+        Assert.Equal("server", server.Read("ro/a.txt"));
+        Assert.Equal(FileStatus.Kept, c.Sync.GetFileStatus("ro/a.txt"));
+
+        // Uploading to an exact path (what the backup does) reports failure instead of throwing.
+        var local = Path.Combine(TestEnv.NewDir("src"), "b.txt");
+        File.WriteAllText(local, "b");
+        Assert.False(await c.Sync.UploadFileAsync(local, "ro/b.txt").T());
+        Assert.False(server.Exists("ro/b.txt"));
+        Assert.Contains("只读文件夹，不能修改", c.LogText);
+    }
+
+    [Fact]
+    public async Task Delete_GoesToServerRecycleBin()
+    {
+        _server.Put("docs/a.txt", "a");
+        var c = await Connect();
+        await c.Sync.DeleteAsync("docs", isDir: true).T();
+
+        Assert.False(_server.Exists("docs"));
+        var trash = Path.Combine(_server.DataDir, ".filecopy", "trash");
+        var item = Assert.Single(Directory.GetDirectories(trash));
+        Assert.Equal("a", File.ReadAllText(Path.Combine(item, "item", "a.txt")));
+        Assert.Contains(TestServer.EquipmentId, File.ReadAllText(Path.Combine(item, "meta.json")));
+        Assert.DoesNotContain(c.Sync.List("").Remote, e => e.Path.StartsWith(".filecopy"));
+    }
+
     // ---------- keep / free up ----------
 
     [Fact]

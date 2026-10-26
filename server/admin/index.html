@@ -250,6 +250,9 @@ const MESSAGES = {
   "not found": "项目不存在（可能已被删除）",
   "trash item not found": "回收站中没有该项目",
   "run setup first": "请先点击“启用二步认证”",
+  "code already used": "该验证码刚刚已使用过，请等待验证器显示下一个验证码",
+  "totp already enabled": "二步认证已启用；如需更换验证器，请先停用再重新启用",
+  "still read-only through another folder": "仍处于只读：上级文件夹或仅大小写不同的同名文件夹已设为只读，请先取消那个文件夹的只读",
 };
 
 async function api(method, url, body) {
@@ -386,7 +389,7 @@ async function refreshStatus() {
       dv.conflict ? `<span class="badge bad" title="${esc(dv.ips.join(", "))}">ID 冲突</span>` : "",
       dv.pending ? `<span class="badge pend" title="客户端仍在使用旧 ID：${esc(dv.pending.join(", "))}">待同步</span>` : "",
     ].join("");
-    const ips = dv.conflict ? dv.ips.join("<br>") : esc(dv.lastIP);
+    const ips = dv.conflict ? dv.ips.map(esc).join("<br>") : esc(dv.lastIP);
     return `<tr class="${dv.conflict ? "conflict" : ""}" data-id="${esc(dv.id)}">
       <td><button class="link" data-act="rename" title="点击修改">${esc(dv.id)}</button></td>
       <td>${badges}</td><td>${ips}</td><td>${dv.lastSeen ? ago(dv.lastSeen, st.now) : "-"}</td>
@@ -564,8 +567,19 @@ $("fDelete").onclick = async () => {
 };
 
 async function setReadOnly(ro) {
-  for (const p of selected) {
-    try { await api("POST", "/admin/api/readonly", { path: p, readOnly: ro }); } catch (e) { fail(e); break; }
+  // A subfolder stays read-only while a selected ancestor is: retry until no more progress.
+  const elsewhere = MESSAGES["still read-only through another folder"];
+  let todo = [...selected];
+  while (todo.length) {
+    const later = [];
+    for (const p of todo) {
+      try { await api("POST", "/admin/api/readonly", { path: p, readOnly: ro }); } catch (e) {
+        if (e.message === elsewhere) { later.push(p); continue; }
+        fail(e); loadTree(); return;
+      }
+    }
+    if (later.length === todo.length) { fail(new Error(elsewhere)); break; }
+    todo = later;
   }
   loadTree();
 }
@@ -617,14 +631,19 @@ $("fMove").onclick = () => copyOrMove(true);
 
 const UPLOAD_PARALLEL = 3;
 
+// Retries network errors and 5xx; a 4xx (session expired, upload gone) fails right away.
 async function putChunk(id, off, blob) {
   for (let attempt = 1; ; attempt++) {
+    let r;
     try {
-      const r = await fetch(`${FS}/upload/${id}?offset=${off}`, { method: "PUT", body: blob, headers: { "X-Requested-With": "filecopy" } });
-      if (r.ok) return;
-      if (r.status < 500 || attempt >= 4) throw new Error((await r.text()).trim() || "HTTP " + r.status);
+      r = await fetch(`${FS}/upload/${id}?offset=${off}`, { method: "PUT", body: blob, headers: { "X-Requested-With": "filecopy" } });
     } catch (e) {
       if (attempt >= 4) throw e;
+    }
+    if (r) {
+      if (r.ok) return;
+      if (r.status === 401) { showLogin(); throw new Error("登录已失效，请重新登录"); }
+      if (r.status < 500 || attempt >= 4) throw new Error((await r.text()).trim() || "HTTP " + r.status);
     }
     await new Promise(res => setTimeout(res, attempt * 1000));
   }

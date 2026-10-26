@@ -25,6 +25,7 @@ set -euo pipefail
 APP_DIR=/root/data/docker_data/filecopy
 PORT="${PORT:-8240}"
 BIND="${BIND:-0.0.0.0}"
+case "$BIND" in localhost|::1|"[::1]") BIND=127.0.0.1 ;; esac # 后面按 127.0.0.1 判断“只监听本机”
 GO_IMAGE="${GO_IMAGE:-golang:1.23-alpine}"
 REPO_TARBALL="${REPO_TARBALL:-https://github.com/eddy0425/filecopy/archive/refs/heads/main.tar.gz}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -124,6 +125,9 @@ EXPOSE 8080
 ENTRYPOINT ["/app/filecopy-server", "-config", "/app/config.json"]
 EOF
 
+# 只监听本机时前面是反向代理，它经 Docker 网桥（172.x）访问容器，需信任其 X-Forwarded-For
+TRUST_PROXY=0; [ "$BIND" = "127.0.0.1" ] && TRUST_PROXY=1
+
 cat > "$APP_DIR/docker-compose.yml" <<EOF
 services:
   filecopy:
@@ -131,6 +135,8 @@ services:
     image: filecopy-server:latest
     container_name: filecopy
     restart: unless-stopped
+    environment:
+      - FILECOPY_TRUST_PROXY=$TRUST_PROXY
     ports:
       - "$BIND:$PORT:8080"
     volumes:
