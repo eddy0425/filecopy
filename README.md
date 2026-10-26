@@ -4,6 +4,12 @@
 
 适用场景：远程桌面连到海外电脑时，用 RDP 拖拽传文件很慢。两台电脑各装一个客户端，连接同一台服务器，文件经服务器中转，大文件用多连接并行分块传输，跨洋链路也能跑满带宽。
 
+服务端一键安装（Linux，需 root 和 Docker，详见 [服务端部署](#服务端部署linux)）：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/eddy0425/filecopy/refs/heads/main/filecopy.sh)
+```
+
 ## 功能
 
 - **资源管理器风格的文件列表**：系统文件图标、类型、大小，OneDrive 风格的状态图标
@@ -27,6 +33,7 @@
 ## 目录结构
 
 ```
+filecopy.sh             服务端一键安装 / 升级脚本（Docker）
 server/                 Go 服务端（仅用标准库）
   main.go               配置加载、路由、启动
   auth.go               Bearer Token 认证
@@ -44,6 +51,25 @@ client/FileCopy.Client.Tests/ 客户端测试（xUnit，集成测试会自动编
 ```
 
 ## 服务端部署（Linux）
+
+### 一键安装（Docker，推荐）
+
+以 root 运行，需已安装 Docker（`curl -fsSL https://get.docker.com | sh`）：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/eddy0425/filecopy/refs/heads/main/filecopy.sh)
+```
+
+- 自动下载源码并用 `golang` 镜像编译，安装到 `/root/data/docker_data/filecopy`，文件存放在其下的 `data/`
+- 首次安装自动生成 Token，结束时打印服务器地址和 Token，填入客户端即可
+- 选项写在 `bash` 前面，如 `PORT=9000 bash <(curl ...)`：
+  - `PORT=9000`：对外端口，默认 8080
+  - `BIND=127.0.0.1`：只监听本机，配合 Caddy 提供 HTTPS（见下文）
+  - `GO_IMAGE=...`：Docker Hub 访问慢时换成镜像源里的 golang 镜像
+- 升级：重新运行同一条命令，配置和数据保留
+- 也可以克隆仓库后在根目录运行 `bash filecopy.sh`；若已在本地编译好 `server/bin/filecopy-server`，会直接使用，不再拉取 golang 镜像
+
+以下是不用 Docker 的手动部署步骤。
 
 ### 1. 编译
 
@@ -92,7 +118,7 @@ files.example.com {
 }
 ```
 
-此时把 `config.json` 里的 `listen` 改成 `127.0.0.1:8080`，只让 Caddy 访问。
+此时把 `config.json` 里的 `listen` 改成 `127.0.0.1:8080`，只让 Caddy 访问；Docker 部署则不改 `config.json`，用 `BIND=127.0.0.1` 重新运行安装命令。
 
 ## 客户端
 

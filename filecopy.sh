@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # FileCopy 服务端一键安装 / 升级脚本（Docker 部署）
 #
-# 用法（在服务器上，以 root 运行，脚本需与 server/ 目录放在一起，即仓库根目录）：
-#   bash filecopy.sh              # 首次安装或升级，默认对外端口 8080
-#   PORT=9000 bash filecopy.sh    # 指定对外端口
+# 用法（在服务器上，以 root 运行）：
+#   bash <(curl -fsSL https://raw.githubusercontent.com/eddy0425/filecopy/refs/heads/main/filecopy.sh)
+#                                 # 一键安装 / 升级，无需克隆仓库，自动下载源码
+#   bash filecopy.sh              # 在仓库根目录（与 server/ 同级）运行，使用本地代码
+#   PORT=9000 bash filecopy.sh    # 指定对外端口，默认 8080
 #   BIND=127.0.0.1 bash filecopy.sh  # 只监听本机，前面用 Caddy / Nginx 反代 HTTPS
 #
 # 二进制来源（按顺序）：
 #   1. server/bin/filecopy-server —— 本地交叉编译好再上传，服务器无需拉取 golang 镜像
 #   2. 否则用 golang 镜像在容器里编译 server/ 源码（可用 GO_IMAGE 指定镜像加速地址）
+#   3. 脚本旁边没有 server/ 时（如一键安装），从 GitHub 下载源码到安装目录的 src/ 再编译
 #
 # 安装后的目录：
 #   /root/data/docker_data/filecopy/
@@ -23,6 +26,7 @@ APP_DIR=/root/data/docker_data/filecopy
 PORT="${PORT:-8080}"
 BIND="${BIND:-0.0.0.0}"
 GO_IMAGE="${GO_IMAGE:-golang:1.23-alpine}"
+REPO_TARBALL="${REPO_TARBALL:-https://github.com/eddy0425/filecopy/archive/refs/heads/main.tar.gz}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="$SCRIPT_DIR/server"
 
@@ -42,6 +46,17 @@ else
 fi
 
 mkdir -p "$APP_DIR/data"
+
+# ---------- 准备源码 ----------
+# 通过 bash <(curl ...) 运行时脚本旁边没有 server/，改为下载源码
+if [ ! -f "$SRC_DIR/main.go" ] && [ ! -f "$SRC_DIR/bin/filecopy-server" ]; then
+    info "未找到本地源码，从 $REPO_TARBALL 下载"
+    rm -rf "$APP_DIR/src" && mkdir -p "$APP_DIR/src"
+    curl -fsSL "$REPO_TARBALL" | tar -xz -C "$APP_DIR/src" --strip-components=1 \
+        || die "下载源码失败，可克隆仓库后在仓库根目录运行 bash filecopy.sh"
+    SRC_DIR="$APP_DIR/src/server"
+    [ -f "$SRC_DIR/main.go" ] || die "下载的源码中没有 server/main.go：$REPO_TARBALL"
+fi
 
 # ---------- 准备二进制 ----------
 PREBUILT="$SRC_DIR/bin/filecopy-server"
