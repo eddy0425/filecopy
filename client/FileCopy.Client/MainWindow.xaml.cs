@@ -110,14 +110,14 @@ public partial class MainWindow : Window
                     prompt = ex.Message + "：";
                     continue;
                 }
-                catch (UnauthorizedException ex)
+                catch (TotpRateLimitedException ex) // the same server, reachable: a reset would not help
+                {
+                    MessageBox.Show("无法验证: " + ex.Message, "FileCopy");
+                    return false;
+                }
+                catch (Exception ex) // e.g. rejected token or timeout: connected before the server was replaced
                 {
                     return OfferServerReset("无法验证: " + SyncService.ErrorText(ex));
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show("无法验证: " + SyncService.ErrorText(ex), "FileCopy");
-                    return false;
                 }
                 Log("解锁失败: 验证码错误");
                 prompt = "验证码错误，请重新输入：";

@@ -118,8 +118,7 @@ public sealed class ServerApi : IDisposable
         using var resp = await _http.PostAsJsonAsync("api/totp/verify", new { code }, cts.Token).ConfigureAwait(false);
         if (resp.StatusCode == HttpStatusCode.Forbidden) return false;
         if (resp.StatusCode == HttpStatusCode.Conflict) throw new TotpCodeUsedException();
-        if (resp.StatusCode == HttpStatusCode.TooManyRequests)
-            throw new InvalidOperationException("尝试次数过多，请 5 分钟后再试");
+        if (resp.StatusCode == HttpStatusCode.TooManyRequests) throw new TotpRateLimitedException();
         EnsureOk(resp);
         return true;
     }
@@ -390,6 +389,9 @@ public sealed class ReadOnlyFolderException() : IOException("只读文件夹，�
 
 /// <summary>The code is valid but was just used (e.g. to log in to the control panel); the next one is needed.</summary>
 public sealed class TotpCodeUsedException() : InvalidOperationException("该验证码刚刚已使用过，请等待验证器显示下一个验证码");
+
+/// <summary>Too many wrong codes from this address (HTTP 429); the server blocks it for a while.</summary>
+public sealed class TotpRateLimitedException() : InvalidOperationException("尝试次数过多，请 5 分钟后再试");
 
 /// <summary>The administrator has paused client connections (HTTP 503).</summary>
 public sealed class ServerPausedException() : InvalidOperationException("服务器已暂停连接");
