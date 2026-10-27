@@ -16,6 +16,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <TextBlock Text="服务器地址" VerticalAlignment="Center" Margin="0,5,10,5" />
@@ -34,12 +35,16 @@
         <TextBox x:Name="EquipmentIdBox" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,5" Padding="3"
                  ToolTip="用于区分不同电脑的备份文件名，例如 XZT1-CB" />
 
-        <CheckBox x:Name="AutoConnectBox" Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,8,0,0"
-                  Content="开机运行时自动连接并最小化到托盘" />
+        <CheckBox x:Name="CloseToTrayBox" Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,8,0,0"
+                  Content="关闭窗口时最小化到托盘" ToolTip="不勾选时，关闭窗口即退出程序" />
 
-        <StackPanel Grid.Row="5" Grid.ColumnSpan="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
-            <Button Content="保存并连接" Width="100" Padding="0,4" IsDefault="True" Click="Ok_Click" />
-            <Button Content="取消" Width="80" Margin="8,0,0,0" IsCancel="True" />
-        </StackPanel>
+        <CheckBox x:Name="AutoConnectBox" Grid.Row="5" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,8,0,0"
+                  Content="开机运行时自动连接（勾选上一项时最小化到托盘）" />
+
+        <DockPanel Grid.Row="6" Grid.ColumnSpan="3" Margin="0,16,0,0" LastChildFill="False">
+            <Button x:Name="TestButton" Content="测试连接" Width="90" Padding="0,4" Click="Test_Click" />
+            <Button DockPanel.Dock="Right" Content="取消" Width="80" Margin="8,0,0,0" IsCancel="True" />
+            <Button DockPanel.Dock="Right" Content="保存并连接" Width="100" Padding="0,4" IsDefault="True" Click="Ok_Click" />
+        </DockPanel>
     </Grid>
 </Window>

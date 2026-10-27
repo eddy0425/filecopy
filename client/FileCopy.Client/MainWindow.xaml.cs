@@ -39,9 +39,18 @@ public partial class MainWindow : Window
     private DateTime _unlockedAt = DateTime.MinValue;
     private bool _unlocking;
     private bool _settingsShown; // so the first show does not reopen settings the lock prompt already offered
+    private bool _exiting; // Shutdown ran: closing the window no longer goes to the tray
     private readonly System.Windows.Media.Brush _normalStatusBrush; // StatusText's foreground as set in XAML
 
     public bool StartMinimized { get; }
+    /// <summary>Paused from the tray: disconnected until resumed. Not saved, a restart syncs again.</summary>
+    public bool SyncPaused { get; private set; }
+    public bool CloseToTray => _settings.CloseToTray;
+    /// <summary>Connected and not paused: the tray offers "暂停同步", otherwise "立即同步".</summary>
+    public bool CanPauseSync => !SyncPaused && _sync != null;
+    public event Action? SyncPausedChanged;
+    /// <summary>The window was closed (and the exit confirmed) while it does not close to the tray.</summary>
+    public event Action? ExitRequested;
 
     private sealed record Crumb(string Name, string Rel, Visibility SeparatorVisibility);
 
@@ -51,7 +60,7 @@ public partial class MainWindow : Window
         _normalStatusBrush = StatusText.Foreground;
         FilesGrid.ItemsSource = _items;
         TransfersGrid.ItemsSource = _transfers.Items;
-        StartMinimized = _settings.AutoConnect && _settings.GetToken().Length > 0;
+        StartMinimized = StartsMinimized(_settings.AutoConnect, _settings.CloseToTray, _settings.GetToken().Length > 0);
         IsVisibleChanged += (_, _) => { if (IsVisible) _hiddenToTray = false; };
         UpdateBreadcrumb();
         Loaded += (_, _) =>
@@ -65,12 +74,40 @@ public partial class MainWindow : Window
         heartbeat.Start();
     }
 
-    // Closing the window keeps the app in the tray; exit from the tray menu.
+    /// <summary>Starting into the tray only makes sense when closing keeps the app there.</summary>
+    internal static bool StartsMinimized(bool autoConnect, bool closeToTray, bool hasToken) => autoConnect && closeToTray && hasToken;
+
+    // Closing the window keeps the app in the tray if so set; otherwise it exits (App runs the exit).
     protected override void OnClosing(CancelEventArgs e)
     {
+        if (_exiting) return;
         e.Cancel = true;
+        if (!_settings.CloseToTray)
+        {
+            if (ConfirmExit()) Dispatcher.BeginInvoke(() => ExitRequested?.Invoke()); // not from within Closing
+            return;
+        }
         Hide();
         _hiddenToTray = true;
+    }
+
+    /// <summary>Asks before exiting would cut off transfers or a backup. True to exit.</summary>
+    public bool ConfirmExit()
+    {
+        if (ExitWarning(_transfers.Items.Count(t => !t.IsFinished), _backup != null) is not { } warning) return true;
+        var answer = IsVisible
+            ? MessageBox.Show(this, warning, "FileCopy", MessageBoxButton.OKCancel, MessageBoxImage.Warning)
+            : MessageBox.Show(warning, "FileCopy", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+        return answer == MessageBoxResult.OK;
+    }
+
+    /// <summary>What exiting would interrupt, as the question to ask; null when nothing is running.</summary>
+    internal static string? ExitWarning(int transfers, bool backup)
+    {
+        var running = new List<string>();
+        if (transfers > 0) running.Add($"有 {transfers} 个传输未完成");
+        if (backup) running.Add("备份进行中");
+        return running.Count == 0 ? null : string.Join("，", running) + "，退出将中断，仍要退出吗？";
     }
 
     /// <summary>
@@ -84,24 +121,24 @@ public partial class MainWindow : Window
         _unlocking = true;
         try
         {
-            var prompt = "请输入二步验证码（验证器 App 中的 6 位数字）：";
+            const string askCode = "请输入二步验证码（验证器 App 中的 6 位数字）：";
+            var prompt = askCode;
             // E.g. started offline into the tray: the failed connection is not retried on its own.
             // Connects while the code is being typed: the prompt shows at once, and a slow first sync
             // has less time to outlast the code than when connecting after it was entered.
-            var connecting = _sync == null && _settings.GetToken().Length > 0 ? ConnectAsync() : Task.CompletedTask;
+            var connecting = _sync == null && !SyncPaused && _settings.GetToken().Length > 0 ? ConnectAsync() : Task.CompletedTask;
             while (true)
             {
                 var code = InputDialog.Show(null, "FileCopy 已锁定", prompt);
                 if (code == null) return false;
                 await connecting;
-                var sync = _sync;
-                if (sync == null) return OfferServerReset("未连接服务器，无法验证。");
                 try
                 {
-                    if (await sync.VerifyTotpAsync(code))
+                    if (await VerifyTotpAsync(code))
                     {
                         _unlockedAt = DateTime.UtcNow;
                         _hiddenToTray = false;
+                        if (_sync == null && !SyncPaused) _ = ConnectAsync(); // checked over a short-lived connection: the server is back
                         return true;
                     }
                 }
@@ -110,14 +147,17 @@ public partial class MainWindow : Window
                     prompt = ex.Message + "：";
                     continue;
                 }
-                catch (TotpRateLimitedException ex) // the same server, reachable: a reset would not help
+                catch (TotpRateLimitedException ex) // the same server, reachable: the settings are not the problem
                 {
                     MessageBox.Show("无法验证: " + ex.Message, "FileCopy");
                     return false;
                 }
-                catch (Exception ex) // e.g. rejected token or timeout: connected before the server was replaced
+                catch (Exception ex) // e.g. offline, rejected token, or the server was replaced
                 {
-                    return OfferServerReset("无法验证: " + SyncService.ErrorText(ex));
+                    if (OfferSettings("无法验证: " + SyncService.ErrorText(ex)) is not { } reconnecting) return false;
+                    connecting = reconnecting;
+                    prompt = askCode;
+                    continue;
                 }
                 Log("解锁失败: 验证码错误");
                 prompt = "验证码错误，请重新输入：";
@@ -130,31 +170,26 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// The code cannot be checked, e.g. because the server was replaced: offers to forget the token so another
-    /// server can be set up. Keeping it would let anyone unlock by pointing the client at a server of their own,
-    /// and would send the token there. Returns true (unlocked) once the token is gone: there is nothing left to lock.
+    /// Checks the code over the connection, or, when there is none (paused, or the connection failed), over a
+    /// short-lived one: unlocking while paused does not resume syncing.
     /// </summary>
-    private bool OfferServerReset(string reason)
+    private async Task<bool> VerifyTotpAsync(string code)
     {
-        var answer = MessageBox.Show(reason + "\n\n如果已经更换了服务器，可以清除当前 Token 后重新设置服务器地址和 Token；若只是网络暂时中断，请选择“否”。\n是否清除 Token 并打开设置？",
+        if (_sync is { } sync) return await sync.VerifyTotpAsync(code);
+        using var api = new ServerApi(_settings.ServerUrl, _settings.GetToken(), _settings.EquipmentId);
+        return await api.VerifyTotpAsync(code);
+    }
+
+    /// <summary>
+    /// The code cannot be checked: offers the settings to check the server address and token (and test them).
+    /// Changing the address there needs the token typed in again (see <see cref="SettingsWindow"/>).
+    /// Returns the new connection once saved, or null to stay locked.
+    /// </summary>
+    private Task? OfferSettings(string reason)
+    {
+        var answer = MessageBox.Show(reason + "\n\n是否打开设置检查服务器地址和 Token？（设置中可测试连接）",
             "FileCopy", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-        if (answer != MessageBoxResult.Yes) return false;
-        try
-        {
-            if (_sync != null) _sync.State.Discard(); // before Disconnect, whose flush would write it again
-            else LocalState.Delete(_settings.ServerUrl, _settings.LocalFolder);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { } // a stale state file does no harm
-        Disconnect();
-        _settings.ResetServer();
-        Log("已清除 Token 和同步状态，请重新设置服务器");
-        StatusText.Text = "未连接：请在设置中填写服务器地址和 Token";
-        StatusText.Foreground = System.Windows.Media.Brushes.Firebrick;
-        _folder = "";
-        UpdateBreadcrumb();
-        Reload();
-        OpenSettings();
-        return true;
+        return answer == MessageBoxResult.Yes ? OpenSettings(locked: true) : null;
     }
 
     /// <summary>
@@ -168,6 +203,7 @@ public partial class MainWindow : Window
     /// <summary>App exit: stops transfers and any running backup (7-Zip is killed so no orphan keeps writing).</summary>
     public void Shutdown()
     {
+        _exiting = true;
         _exit.Cancel();
         try { _backup?.Wait(TimeSpan.FromSeconds(5)); } catch (Exception) { } // the backup task faults with the cancellation
         Disconnect();
@@ -205,17 +241,46 @@ public partial class MainWindow : Window
         Process.Start(new ProcessStartInfo("explorer.exe", $"\"{folder}\"") { UseShellExecute = true });
     }
 
+    /// <summary>Syncs, or connects when not connected; resumes a paused sync.</summary>
     public void SyncNow()
     {
+        if (SyncPaused)
+        {
+            SetSyncPaused(false);
+            Log("已恢复同步");
+        }
         if (_sync != null) _ = _sync.RefreshAsync();
         else if (_settings.GetToken().Length > 0) _ = ConnectAsync();
+    }
+
+    /// <summary>The tray's "暂停同步" / "立即同步" item (see <see cref="CanPauseSync"/>).</summary>
+    public void ToggleSync()
+    {
+        if (!CanPauseSync)
+        {
+            SyncNow();
+            return;
+        }
+        Disconnect(); // cancels the running transfers
+        SetSyncPaused(true);
+        StatusText.Text = "已暂停同步（从托盘菜单选择“立即同步”继续）";
+        StatusText.Foreground = _normalStatusBrush;
+        Log("已暂停同步");
+        Reload();
+    }
+
+    private void SetSyncPaused(bool paused)
+    {
+        if (SyncPaused == paused) return;
+        SyncPaused = paused;
+        SyncPausedChanged?.Invoke();
     }
 
     // ---------- connection ----------
 
     private async Task ConnectAsync()
     {
-        if (_sync != null) return; // already connecting/connected
+        if (_sync != null || SyncPaused) return; // already connecting/connected, or paused until resumed
         if (string.IsNullOrWhiteSpace(_settings.EquipmentId))
         {
             StatusText.Text = "未连接：请先在设置中填写设备 ID";
@@ -223,7 +288,7 @@ public partial class MainWindow : Window
             if (IsVisible)
             {
                 MessageBox.Show(this, "请先在设置中填写设备 ID。", "FileCopy");
-                OpenSettings();
+                _ = OpenSettings();
             }
             return;
         }
@@ -322,17 +387,18 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OpenSettings()
+    /// <summary>Shows the settings; once saved, reconnects (resuming a paused sync) and returns that connection, else null.</summary>
+    /// <param name="locked">Opened from the lock prompt (see <see cref="SettingsWindow"/>).</param>
+    private Task? OpenSettings(bool locked = false)
     {
         _settingsShown = true;
-        var dlg = new SettingsWindow(_settings) { Owner = IsVisible ? this : null };
-        if (dlg.ShowDialog() == true)
-        {
-            Disconnect();
-            _folder = "";
-            UpdateBreadcrumb();
-            _ = ConnectAsync();
-        }
+        var dlg = new SettingsWindow(_settings, locked) { Owner = IsVisible ? this : null };
+        if (dlg.ShowDialog() != true) return null;
+        Disconnect();
+        SetSyncPaused(false);
+        _folder = "";
+        UpdateBreadcrumb();
+        return ConnectAsync();
     }
 
     // ---------- listing ----------
@@ -444,7 +510,7 @@ public partial class MainWindow : Window
         var sync = _sync;
         if (sync == null)
         {
-            MessageBox.Show(this, "尚未连接服务器。", "FileCopy");
+            MessageBox.Show(this, SyncPaused ? "同步已暂停，请先从托盘菜单选择“立即同步”。" : "尚未连接服务器。", "FileCopy");
             return;
         }
         try
@@ -675,7 +741,7 @@ public partial class MainWindow : Window
         if (string.IsNullOrEmpty(id))
         {
             MessageBox.Show(this, "请先在设置中填写设备 ID。", "FileCopy");
-            OpenSettings();
+            _ = OpenSettings();
             return;
         }
 
@@ -699,7 +765,7 @@ public partial class MainWindow : Window
             sync = _sync; // compressing can take minutes; the connection may have changed meanwhile
             string result;
             if (sync == null)
-                result = "未连接服务器，备份仅保存在本机，连接后自动上传";
+                result = SyncPaused ? "同步已暂停，备份仅保存在本机，恢复同步后自动上传" : "未连接服务器，备份仅保存在本机，连接后自动上传";
             else if (await sync.UploadFileAsync(target, rel))
                 result = $"备份完成，已上传到服务器 {rel}";
             else

@@ -36,6 +36,23 @@ public class MainWindowTests
     public void NameError(string name, bool valid) =>
         Assert.Equal(valid, MainWindow.NameError(name) == null);
 
+    [Theory]
+    [InlineData(true, true, true, true)]
+    [InlineData(true, false, true, false)] // closing exits: starting hidden would leave no window to close
+    [InlineData(false, true, true, false)]
+    [InlineData(true, true, false, false)] // no token: the settings must show
+    public void StartsMinimized(bool autoConnect, bool closeToTray, bool hasToken, bool minimized) =>
+        Assert.Equal(minimized, MainWindow.StartsMinimized(autoConnect, closeToTray, hasToken));
+
+    [Fact]
+    public void ExitWarning_NamesWhatWouldBeInterrupted()
+    {
+        Assert.Null(MainWindow.ExitWarning(0, false));
+        Assert.Equal("有 2 个传输未完成，退出将中断，仍要退出吗？", MainWindow.ExitWarning(2, false));
+        Assert.Equal("备份进行中，退出将中断，仍要退出吗？", MainWindow.ExitWarning(0, true));
+        Assert.Equal("有 1 个传输未完成，备份进行中，退出将中断，仍要退出吗？", MainWindow.ExitWarning(1, true));
+    }
+
     [Fact]
     public void LockRequired_GracePeriodAfterUnlock()
     {
