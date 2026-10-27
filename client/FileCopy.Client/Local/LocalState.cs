@@ -32,29 +32,12 @@ public sealed class LocalState
     private readonly object _writeLock = new(); // one writer at a time, so an older snapshot cannot land last
     private bool _dirty;
     private bool _flushPending;
-    private bool _discarded;
 
     private static string PathFor(string serverUrl, string localFolder)
     {
         var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
             serverUrl.TrimEnd('/').ToLowerInvariant() + "|" + Path.GetFullPath(localFolder).TrimEnd('\\').ToLowerInvariant())))[..16];
         return Path.Combine(Settings.DataDir, $"state-{key}.json");
-    }
-
-    /// <summary>Forgets the sync state for a server (e.g. one that was replaced); the local files stay.</summary>
-    public static void Delete(string serverUrl, string localFolder) => File.Delete(PathFor(serverUrl, localFolder));
-
-    /// <summary>
-    /// Forgets this state for good (e.g. the server was replaced): deletes the file, and writes still pending from
-    /// transfers or a refresh that outlived the disconnect are dropped instead of bringing it back.
-    /// </summary>
-    public void Discard()
-    {
-        lock (_writeLock)
-        {
-            lock (_lock) { _discarded = true; _dirty = false; }
-            File.Delete(_path);
-        }
     }
 
     public static LocalState Load(string serverUrl, string localFolder)
@@ -107,7 +90,7 @@ public sealed class LocalState
             lock (_lock)
             {
                 _flushPending = false;
-                if (_discarded || (onlyIfDirty && !_dirty)) return;
+                if (onlyIfDirty && !_dirty) return;
                 _dirty = false;
                 json = JsonSerializer.Serialize(this);
             }

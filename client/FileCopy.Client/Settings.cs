@@ -13,6 +13,8 @@ public sealed class Settings
     public string ServerUrl { get; set; } = "http://";
     public string LocalFolder { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "FileCopy", "data");
     public bool AutoConnect { get; set; }
+    /// <summary>Closing the window keeps the app running in the tray; otherwise closing exits.</summary>
+    public bool CloseToTray { get; set; }
     /// <summary>Identifies this machine; names its backup archive, e.g. XZT1-CB.</summary>
     public string EquipmentId { get; set; } = "";
     /// <summary>
@@ -42,14 +44,6 @@ public sealed class Settings
     public void SetToken(string token) =>
         ProtectedToken = Convert.ToBase64String(
             ProtectedData.Protect(Encoding.UTF8.GetBytes(token), null, DataProtectionScope.CurrentUser));
-
-    /// <summary>Forgets the server's token and lock, so a replaced server can be set up again.</summary>
-    public void ResetServer()
-    {
-        ProtectedToken = "";
-        ServerTotpEnabled = false;
-        Save();
-    }
 
     public static Settings Load()
     {

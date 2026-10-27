@@ -82,6 +82,27 @@ public sealed class ServerApiTests : IDisposable
     }
 
     [Fact]
+    public async Task VerifyTotp_TooManyWrongCodes_ThrowsRateLimited()
+    {
+        const string secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP";
+        using var server = new TestServer(new { totpSecret = secret });
+        using var api = new ServerApi(server.Url, TestServer.Token, TestServer.EquipmentId);
+
+        var now = DateTimeOffset.UtcNow;
+        var valid = new[] { -30, 0, 30 }.Select(d => Totp(secret, now.AddSeconds(d))).ToHashSet();
+        var wrong = Enumerable.Range(0, 10).Select(i => $"{i}{i}{i}{i}{i}{i}").First(c => !valid.Contains(c));
+        // Until blocked the codes are just wrong; then even a valid one is refused, so a reset is not offered.
+        var blocked = false;
+        for (var i = 0; i < 10 && !blocked; i++)
+        {
+            try { Assert.False(await api.VerifyTotpAsync(wrong)); }
+            catch (TotpRateLimitedException) { blocked = true; }
+        }
+        Assert.True(blocked);
+        await Assert.ThrowsAsync<TotpRateLimitedException>(() => api.VerifyTotpAsync(Totp(secret, now)));
+    }
+
+    [Fact]
     public async Task SetEquipmentId_AppliesToFollowingRequests()
     {
         Assert.Equal(TestServer.EquipmentId, (await _api.PingAsync()).EquipmentId);
