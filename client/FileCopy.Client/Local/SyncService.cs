@@ -240,16 +240,15 @@ public sealed class SyncService : IDisposable
             if (r == null || r.IsDir)
             {
                 if (r != null) continue; // name clash with a remote folder; leave alone
-                if (snap != null)
+                if (snap != null && !LocalChanged(fi, snap))
                 {
                     // Deleted on the server: move our copy to the Recycle Bin (recoverable).
-                    if (LocalChanged(fi, snap)) jobs.Add(UploadAsync(rel, baseMtime: 0));
-                    else if (!UploadedSince(rel)) RecycleLocal(rel, "云端已删除");
+                    if (!UploadedSince(rel)) RecycleLocal(rel, "云端已删除");
+                    continue;
                 }
-                else
-                {
-                    jobs.Add(UploadAsync(rel, baseMtime: 0)); // new local file
-                }
+                // New local file, or changed after the server deleted it.
+                KeepNewLocalFolder(rel, remote);
+                jobs.Add(UploadAsync(rel, baseMtime: 0));
                 continue;
             }
 
@@ -299,6 +298,17 @@ public sealed class SyncService : IDisposable
     /// not deleted on the server. The scan takes a while, and transfers finish during it.
     /// </summary>
     private bool UploadedSince(string rel) => _remote.ContainsKey(rel);
+
+    /// <summary>
+    /// The upload of a local file creates its missing folders on the server. Its files are kept (pinned),
+    /// so keep the topmost new folder too; otherwise it would show as cloud-only.
+    /// </summary>
+    private void KeepNewLocalFolder(string rel, Dictionary<string, RemoteEntry> remote)
+    {
+        string? top = null;
+        for (var p = LocalState.Parent(rel); p.Length > 0 && !remote.ContainsKey(p); p = LocalState.Parent(p)) top = p;
+        if (top != null && !State.IsInKeptFolder(top)) State.AddKeptFolder(top);
+    }
 
     /// <summary>Removes empty local folders that no longer exist on the server; <paramref name="dirs"/> are all mirror folders.</summary>
     private void RemoveEmptyStaleDirs(Dictionary<string, RemoteEntry> remote, List<DirectoryInfo> dirs)

@@ -484,6 +484,32 @@ public sealed class SyncServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Refresh_NewLocalFolder_IsKept()
+    {
+        // Regression: a folder created in the mirror was uploaded with its files but showed as cloud-only.
+        var c = await Connect();
+        c.Write("new/sub/n.txt", "new");
+        await Refresh(c);
+        Assert.True(c.Sync.State.IsInKeptFolder("new"));
+        Assert.True(c.Sync.State.IsInKeptFolder("new/sub"));
+
+        _server.Put("new/s.txt", "s");
+        await Refresh(c);
+        Assert.Equal("s", c.Read("new/s.txt"));
+    }
+
+    [Fact]
+    public async Task Refresh_NewLocalFileInExistingFolder_DoesNotKeepFolder()
+    {
+        _server.Put("docs/a.txt", "a");
+        var c = await Connect();
+        c.Write("docs/b.txt", "b");
+        await Refresh(c);
+        Assert.Equal("b", _server.Read("docs/b.txt"));
+        Assert.False(c.Sync.State.IsInKeptFolder("docs"));
+    }
+
+    [Fact]
     public async Task Refresh_ManyUploadsFinishingTogether_AreAllListed()
     {
         // Regression: uploads started by a refresh finish on thread-pool threads; their updates of the
